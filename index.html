@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KCE Service Planning Dashboard Pro</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <style>
+    html, body { height: 100%; }
+    #routeMap { height: 620px; width: 100%; }
+    .view-panel { display: none; }
+    .view-panel.active { display: block; }
+    .gantt-grid {
+      display: grid;
+      grid-template-columns: 220px repeat(24, minmax(54px, 1fr));
+      min-width: 1500px;
+    }
+    .gantt-header-cell {
+      position: sticky; top: 0; z-index: 5;
+      background: #f8fafc; border-bottom: 1px solid #e2e8f0;
+    }
+    .gantt-team-cell {
+      position: sticky; left: 0; z-index: 4;
+      background: #ffffff; border-right: 1px solid #e2e8f0;
+    }
+    .gantt-hour-cell, .gantt-team-cell { min-height: 84px; border-bottom: 1px solid #e2e8f0; }
+    .gantt-track {
+      grid-column: 2 / span 24;
+      position: relative;
+      min-height: 84px;
+      border-bottom: 1px solid #e2e8f0;
+      background: repeating-linear-gradient(
+        to right,
+        #f8fafc 0,
+        #f8fafc calc(100% / 24 - 1px),
+        #e2e8f0 calc(100% / 24 - 1px),
+        #e2e8f0 calc(100% / 24)
+      );
+    }
+    .gantt-bar {
+      position: absolute; top: 12px; height: 56px; border-radius: 14px;
+      padding: 8px 10px; color: white; overflow: hidden;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+      border: 1px solid rgba(255,255,255,0.25);
+    }
+    .gantt-bar small { display: block; opacity: 0.92; line-height: 1.1; }
+    .gantt-bar b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+    .mini-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
+    .mini-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+  <div class="max-w-[1800px] mx-auto p-4 md:p-6 space-y-4">
+    <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
+      <div>
+        <h1 class="text-2xl md:text-3xl font-bold">KCE Service Planning Dashboard</h1>
+        <p class="text-sm text-slate-600 mt-1">ดูแผนรายวันแบบ Route Map, Gantt Chart และ Route List ในหน้าเดียว</p>
+      </div>
+      <button id="refreshBtn" class="px-4 py-2 rounded-2xl bg-slate-900 text-white shadow">รีเฟรชข้อมูล</button>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">งานทั้งหมด</div><div id="totalJobs" class="text-3xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">Planned</div><div id="plannedJobs" class="text-3xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">Pending</div><div id="pendingJobs" class="text-3xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">ทีมที่มีงาน</div><div id="activeTeams" class="text-3xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">Priority เฉลี่ย</div><div id="avgPriority" class="text-3xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">วันที่เลือก</div><div id="latestDate" class="text-xl font-bold mt-1">-</div></div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+      <div class="xl:col-span-3 space-y-4">
+        <div class="bg-white rounded-2xl shadow p-4 space-y-4">
+          <div class="font-semibold">ตัวกรอง</div>
+          <div>
+            <label class="text-sm text-slate-600">วันที่</label>
+            <select id="dateFilter" class="mt-1 w-full rounded-xl border-slate-300"></select>
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">ทีม</label>
+            <select id="teamFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">สถานะ</label>
+            <select id="statusFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">เหตุผลเข้าพบ</label>
+            <select id="reasonFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">ค้นหาลูกค้า</label>
+            <input id="searchInput" type="text" placeholder="ชื่อลูกค้า / customer_id" class="mt-1 w-full rounded-xl border-slate-300" />
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">มุมมอง</label>
+            <div class="grid grid-cols-3 gap-2 mt-2">
+              <button data-view="route" class="view-switch px-3 py-2 rounded-xl bg-slate-900 text-white text-sm">Route</button>
+              <button data-view="gantt" class="view-switch px-3 py-2 rounded-xl bg-slate-200 text-sm">Gantt</button>
+              <button data-view="table" class="view-switch px-3 py-2 rounded-xl bg-slate-200 text-sm">Table</button>
+            </div>
+          </div>
+          <button id="resetBtn" class="w-full px-4 py-2 rounded-xl bg-slate-200">ล้างตัวกรอง</button>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow p-4">
+          <div class="font-semibold mb-3">สรุปตามทีม</div>
+          <div id="teamSummary" class="space-y-2 text-sm"></div>
+        </div>
+      </div>
+
+      <div class="xl:col-span-9 space-y-4">
+        <div class="bg-white rounded-2xl shadow overflow-hidden">
+          <div class="px-4 py-3 border-b flex items-center justify-between">
+            <div class="font-semibold">เมนูมุมมองแผน</div>
+            <div class="text-sm text-slate-500">สลับดู Route, Gantt และ Table</div>
+          </div>
+
+          <div id="routeView" class="view-panel active">
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route map ของวันที่เลือก</div>
+            <div id="routeMap"></div>
+          </div>
+
+          <div id="ganttView" class="view-panel">
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Gantt chart ต่อทีมในวันเดียวกัน โดยใช้ ETA/ETD จาก daily_plan</div>
+            <div class="overflow-auto mini-scroll"><div id="ganttContainer" class="min-w-[1500px]"></div></div>
+          </div>
+
+          <div id="tableView" class="view-panel">
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route list รายละเอียดทั้งหมด</div>
+            <div class="overflow-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50">
+                  <tr>
+                    <th class="text-left px-4 py-3">Date</th>
+                    <th class="text-left px-4 py-3">Team</th>
+                    <th class="text-left px-4 py-3">Seq</th>
+                    <th class="text-left px-4 py-3">Customer</th>
+                    <th class="text-left px-4 py-3">Reason</th>
+                    <th class="text-left px-4 py-3">Status</th>
+                    <th class="text-left px-4 py-3">ETA</th>
+                    <th class="text-left px-4 py-3">ETD</th>
+                    <th class="text-left px-4 py-3">Priority</th>
+                    <th class="text-left px-4 py-3">Map</th>
+                  </tr>
+                </thead>
+                <tbody id="routeTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="errorBox" class="hidden bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 text-sm"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const CONFIG = {
+  SHEET_ID: "1Ya8RfQAMexUZmqtOW9E7OHRJuXrYU09eaBuq0W05Fuo",
+  TABS: { dailyPlan: "daily_plan", customers: "customers" }
+};
+
+let rawDailyPlan = [];
+let currentView = "route";
+let map, markersLayer, polylinesLayer;
+
+function gvizUrl(sheetName) {
+  return `https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
+}
+
+async function fetchGviz(sheetName) {
+  const res = await fetch(gvizUrl(sheetName));
+  if (!res.ok) throw new Error(`โหลดชีท ${sheetName} ไม่สำเร็จ`);
+  const text = await res.text();
+  const jsonText = text.substring(text.indexOf("{"), text.lastIndexOf("}") + 1);
+  return gvizToObjects(JSON.parse(jsonText));
+}
+
+function gvizToObjects(gviz) {
+  const cols = gviz.table.cols.map(c => c.label || c.id || "");
+  const rows = gviz.table.rows || [];
+  return rows.map(r => {
+    const obj = {};
+    cols.forEach((col, i) => {
+      const cell = r.c[i];
+      obj[col] = cell ? (cell.f ?? cell.v ?? "") : "";
+    });
+    return obj;
+  });
+}
+
+function normalizeTime(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+  if (/^\d{1,2}:\d{2}$/.test(s)) return s.padStart(5, "0");
+  if (/^\d{1,2}\.\d{2}$/.test(s)) return s.replace(".", ":").padStart(5, "0");
+  return s;
+}
+
+function normalizeDailyPlanRow(r, customerMap) {
+  const customer = customerMap.get(String(r.customer_id || "").trim()) || {};
+  const lat = parseFloat(customer.lat || 0) || null;
+  const lng = parseFloat(customer.lng || 0) || null;
+  return {
+    date: String(r.date || "").trim(),
+    team_id: String(r.team_id || "").trim(),
+    customer_id: String(r.customer_id || "").trim(),
+    sequence: Number(r.sequence || 0),
+    estimated_arrival_time: normalizeTime(r.estimated_arrival_time),
+    estimated_departure_time: normalizeTime(r.estimated_departure_time),
+    visit_reason: String(r.visit_reason || "").trim(),
+    status: String(r.status || "").trim(),
+    google_map_link: String(r.google_map_link || "").trim(),
+    priority_score: Number(r.priority_score || 0),
+    customer_name: String(r.customer_name || customer.customer_name || "").trim(),
+    team_name: String(r.team_name || "").trim(),
+    lat, lng,
+    province: String(customer.province || "").trim(),
+    district: String(customer.district || "").trim()
+  };
+}
+
+function timeToMinutes(hhmm) {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function statusColor(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "planned") return "#10b981";
+  if (s === "pending_assignment") return "#f59e0b";
+  if (s === "in_progress") return "#0ea5e9";
+  if (s === "completed") return "#64748b";
+  if (s === "skipped") return "#ef4444";
+  return "#334155";
+}
+
+function teamColor(name) {
+  const palette = ["#2563eb", "#7c3aed", "#dc2626", "#059669", "#ea580c", "#0f766e", "#be185d", "#4f46e5"];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash) + name.charCodeAt(i);
+  return palette[Math.abs(hash) % palette.length];
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function initMap() {
+  if (map) return;
+  map = L.map("routeMap").setView([16.5, 103.5], 7);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+  polylinesLayer = L.layerGroup().addTo(map);
+}
+
+function fillSelect(selectEl, items, includeAll = true) {
+  const current = selectEl.value;
+  selectEl.innerHTML = includeAll ? '<option value="">ทั้งหมด</option>' : "";
+  [...new Set(items.filter(Boolean))].sort().forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v; opt.textContent = v;
+    selectEl.appendChild(opt);
+  });
+  if ([...selectEl.options].some(o => o.value === current)) selectEl.value = current;
+}
+
+function prepareFilters(data) {
+  const dates = [...new Set(data.map(d => d.date).filter(Boolean))].sort().reverse();
+  const dateFilter = document.getElementById("dateFilter");
+  dateFilter.innerHTML = "";
+  dates.forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v; opt.textContent = v;
+    dateFilter.appendChild(opt);
+  });
+  if (dates.length) dateFilter.value = dates[0];
+  fillSelect(document.getElementById("teamFilter"), data.map(d => d.team_name));
+  fillSelect(document.getElementById("statusFilter"), data.map(d => d.status));
+  fillSelect(document.getElementById("reasonFilter"), data.map(d => d.visit_reason));
+}
+
+function getFilteredData() {
+  const date = document.getElementById("dateFilter").value;
+  const team = document.getElementById("teamFilter").value;
+  const status = document.getElementById("statusFilter").value;
+  const reason = document.getElementById("reasonFilter").value;
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+
+  return rawDailyPlan.filter(d => {
+    const matchDate = !date || d.date === date;
+    const matchTeam = !team || d.team_name === team;
+    const matchStatus = !status || d.status === status;
+    const matchReason = !reason || d.visit_reason === reason;
+    const matchSearch = !q || d.customer_name.toLowerCase().includes(q) || d.customer_id.toLowerCase().includes(q);
+    return matchDate && matchTeam && matchStatus && matchReason && matchSearch;
+  });
+}
+
+function applyFilters() {
+  const data = getFilteredData();
+  renderSummary(data);
+  renderTeamSummary(data);
+  renderRouteMap(data);
+  renderTable(data);
+  renderGantt(data);
+}
+
+function renderSummary(data) {
+  const total = data.length;
+  const planned = data.filter(d => d.status === "planned").length;
+  const pending = data.filter(d => d.status === "pending_assignment").length;
+  const teams = new Set(data.filter(d => d.team_name && d.team_name !== "ยังไม่จัดทีม").map(d => d.team_name)).size;
+  const avg = total ? (data.reduce((sum, r) => sum + (Number(r.priority_score) || 0), 0) / total).toFixed(0) : "-";
+  document.getElementById("totalJobs").textContent = total;
+  document.getElementById("plannedJobs").textContent = planned;
+  document.getElementById("pendingJobs").textContent = pending;
+  document.getElementById("activeTeams").textContent = teams;
+  document.getElementById("avgPriority").textContent = avg;
+  document.getElementById("latestDate").textContent = document.getElementById("dateFilter").value || "-";
+}
+
+function renderTeamSummary(data) {
+  const container = document.getElementById("teamSummary");
+  const grouped = {};
+  data.forEach(d => {
+    const key = d.team_name || "ยังไม่จัดทีม";
+    if (!grouped[key]) grouped[key] = { total: 0, planned: 0, pending: 0, sumPriority: 0 };
+    grouped[key].total += 1;
+    grouped[key].sumPriority += Number(d.priority_score || 0);
+    if (d.status === "planned") grouped[key].planned += 1;
+    if (d.status === "pending_assignment") grouped[key].pending += 1;
+  });
+  const entries = Object.entries(grouped).map(([team, v]) => ({
+    team, ...v, avgPriority: v.total ? Math.round(v.sumPriority / v.total) : 0
+  })).sort((a, b) => b.total - a.total);
+
+  container.innerHTML = entries.length ? entries.map(v => `
+    <div class="border rounded-xl p-3">
+      <div class="font-medium">${escapeHtml(v.team)}</div>
+      <div class="text-slate-600 mt-1">ทั้งหมด ${v.total} | planned ${v.planned} | pending ${v.pending}</div>
+      <div class="text-slate-500 mt-1">Priority เฉลี่ย ${v.avgPriority}</div>
+    </div>
+  `).join("") : '<div class="text-slate-500">ไม่มีข้อมูล</div>';
+}
+
+function renderRouteMap(data) {
+  initMap();
+  markersLayer.clearLayers();
+  polylinesLayer.clearLayers();
+  const bounds = [];
+  const teamGroups = {};
+
+  data.forEach(d => {
+    if (d.lat && d.lng) {
+      const color = statusColor(d.status);
+      const marker = L.circleMarker([d.lat, d.lng], {
+        radius: 9, color, weight: 2, fillColor: color, fillOpacity: 0.85
+      });
+
+      marker.bindPopup(`
+        <div class="space-y-1">
+          <div class="font-semibold">${escapeHtml(d.customer_name || d.customer_id)}</div>
+          <div><b>ทีม:</b> ${escapeHtml(d.team_name || "-")}</div>
+          <div><b>Seq:</b> ${escapeHtml(d.sequence || "-")}</div>
+          <div><b>สถานะ:</b> ${escapeHtml(d.status || "-")}</div>
+          <div><b>ETA:</b> ${escapeHtml(d.estimated_arrival_time || "-")}</div>
+          <div><b>ETD:</b> ${escapeHtml(d.estimated_departure_time || "-")}</div>
+          ${d.google_map_link ? `<div class="pt-1"><a class="text-blue-600 underline" target="_blank" rel="noopener noreferrer" href="${escapeHtml(d.google_map_link)}">เปิดใน Google Maps</a></div>` : ""}
+        </div>
+      `);
+
+      markersLayer.addLayer(marker);
+      bounds.push([d.lat, d.lng]);
+
+      if (d.team_name && d.team_name !== "ยังไม่จัดทีม" && d.sequence) {
+        if (!teamGroups[d.team_name]) teamGroups[d.team_name] = [];
+        teamGroups[d.team_name].push(d);
+      }
+    }
+  });
+
+  Object.entries(teamGroups).forEach(([team, rows]) => {
+    const pts = rows.sort((a, b) => a.sequence - b.sequence).filter(d => d.lat && d.lng).map(d => [d.lat, d.lng]);
+    if (pts.length >= 2) {
+      L.polyline(pts, { color: teamColor(team), weight: 4, opacity: 0.65 }).addTo(polylinesLayer);
+    }
+  });
+
+  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+  else map.setView([16.5, 103.5], 7);
+
+  if (currentView === "route") setTimeout(() => map.invalidateSize(), 150);
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById("routeTableBody");
+  const rows = [...data].sort((a, b) => {
+    if (a.team_name !== b.team_name) return a.team_name.localeCompare(b.team_name);
+    if ((a.sequence || 9999) !== (b.sequence || 9999)) return (a.sequence || 9999) - (b.sequence || 9999);
+    return a.customer_name.localeCompare(b.customer_name);
+  });
+
+  tbody.innerHTML = rows.length ? rows.map(d => `
+    <tr class="border-t">
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.date)}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.team_name || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.sequence || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap"><div class="font-medium">${escapeHtml(d.customer_name || "-")}</div><div class="text-xs text-slate-500">${escapeHtml(d.customer_id || "")}</div></td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.visit_reason || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap"><span class="inline-flex px-2 py-1 rounded-full text-white text-xs" style="background:${statusColor(d.status)}">${escapeHtml(d.status || "-")}</span></td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.estimated_arrival_time || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.estimated_departure_time || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.priority_score || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${d.google_map_link ? `<a class="text-blue-600 underline" href="${escapeHtml(d.google_map_link)}" target="_blank" rel="noopener noreferrer">Open Map</a>` : "-"}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="10" class="px-4 py-8 text-center text-slate-500">ไม่พบข้อมูลตามตัวกรอง</td></tr>';
+}
+
+function renderGantt(data) {
+  const container = document.getElementById("ganttContainer");
+  const rows = data.filter(d => d.team_name && d.team_name !== "ยังไม่จัดทีม")
+                   .sort((a, b) => a.team_name !== b.team_name ? a.team_name.localeCompare(b.team_name) : (a.sequence || 9999) - (b.sequence || 9999));
+  const grouped = {};
+  rows.forEach(r => {
+    if (!grouped[r.team_name]) grouped[r.team_name] = [];
+    grouped[r.team_name].push(r);
+  });
+
+  const teams = Object.keys(grouped);
+  if (!teams.length) {
+    container.innerHTML = '<div class="p-8 text-slate-500">ไม่มีข้อมูลเพียงพอสำหรับ Gantt chart</div>';
+    return;
+  }
+
+  let html = '<div class="gantt-grid">';
+  html += '<div class="gantt-header-cell gantt-team-cell px-4 py-3 font-semibold">ทีม / ช่วงเวลา</div>';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="gantt-header-cell gantt-hour-cell px-2 py-3 text-xs font-semibold text-center">${String(h).padStart(2, "0")}:00</div>`;
+  }
+
+  teams.forEach(team => {
+    html += `<div class="gantt-team-cell px-4 py-3"><div class="font-semibold">${escapeHtml(team)}</div><div class="text-xs text-slate-500 mt-1">${grouped[team].length} งาน</div></div>`;
+    html += '<div class="gantt-track">';
+    grouped[team].forEach(job => {
+      const startMin = timeToMinutes(job.estimated_arrival_time);
+      const endMin = timeToMinutes(job.estimated_departure_time);
+      if (startMin === null || endMin === null || endMin <= startMin) return;
+      const left = (startMin / (24 * 60)) * 100;
+      const width = ((endMin - startMin) / (24 * 60)) * 100;
+      const color = teamColor(team);
+      html += `<div class="gantt-bar" style="left:${left}%; width:${Math.max(width, 2.2)}%; background:${color};">
+        <small>#${escapeHtml(job.sequence || "-")} | ${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)}</small>
+        <b>${escapeHtml(job.customer_name || job.customer_id)}</b>
+        <small>${escapeHtml(job.visit_reason || "-")} | Priority ${escapeHtml(job.priority_score || "-")}</small>
+      </div>`;
+    });
+    html += '</div>';
+  });
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function setView(viewName) {
+  currentView = viewName;
+  document.querySelectorAll(".view-panel").forEach(el => el.classList.remove("active"));
+  document.getElementById(viewName + "View").classList.add("active");
+  document.querySelectorAll(".view-switch").forEach(btn => {
+    const active = btn.dataset.view === viewName;
+    btn.className = active ? "view-switch px-3 py-2 rounded-xl bg-slate-900 text-white text-sm" : "view-switch px-3 py-2 rounded-xl bg-slate-200 text-sm";
+  });
+  if (viewName === "route" && map) setTimeout(() => map.invalidateSize(), 180);
+}
+
+function showError(message) {
+  const box = document.getElementById("errorBox");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="font-semibold mb-1">โหลดข้อมูลไม่สำเร็จ</div>
+    <div>${escapeHtml(message)}</div>
+    <div class="mt-2 text-xs text-rose-700">ถ้าเป็น Google Sheets ส่วนตัว ให้ Publish หรือเปิดสิทธิ์อ่านให้หน้าเว็บเข้าถึงได้ก่อน</div>`;
+}
+
+async function loadData() {
+  document.getElementById("errorBox").classList.add("hidden");
+  const [dailyPlanRows, customerRows] = await Promise.all([
+    fetchGviz(CONFIG.TABS.dailyPlan),
+    fetchGviz(CONFIG.TABS.customers)
+  ]);
+  const customerMap = new Map(customerRows.map(r => [String(r.customer_id || "").trim(), r]));
+  rawDailyPlan = dailyPlanRows.map(r => normalizeDailyPlanRow(r, customerMap));
+  prepareFilters(rawDailyPlan);
+  applyFilters();
+}
+
+function bindEvents() {
+  ["dateFilter", "teamFilter", "statusFilter", "reasonFilter"].forEach(id => {
+    document.getElementById(id).addEventListener("change", applyFilters);
+  });
+  document.getElementById("searchInput").addEventListener("input", applyFilters);
+  document.getElementById("refreshBtn").addEventListener("click", async () => {
+    try { await loadData(); } catch (e) { showError(e.message || String(e)); }
+  });
+  document.getElementById("resetBtn").addEventListener("click", () => {
+    document.getElementById("teamFilter").value = "";
+    document.getElementById("statusFilter").value = "";
+    document.getElementById("reasonFilter").value = "";
+    document.getElementById("searchInput").value = "";
+    const dateFilter = document.getElementById("dateFilter");
+    if (dateFilter.options.length) dateFilter.value = dateFilter.options[0].value;
+    applyFilters();
+  });
+  document.querySelectorAll(".view-switch").forEach(btn => {
+    btn.addEventListener("click", () => setView(btn.dataset.view));
+  });
+}
+
+(async function main() {
+  bindEvents();
+  initMap();
+  try { await loadData(); } catch (e) { console.error(e); showError(e.message || String(e)); }
+})();
+</script>
+</body>
+</html>
