@@ -50,16 +50,22 @@
       <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">Pending</div><div id="pendingJobs" class="text-3xl font-bold mt-1">-</div></div>
       <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">ทีมที่มีงาน</div><div id="activeTeams" class="text-3xl font-bold mt-1">-</div></div>
       <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">Priority เฉลี่ย</div><div id="avgPriority" class="text-3xl font-bold mt-1">-</div></div>
-      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">วันที่เลือก</div><div id="latestDate" class="text-xl font-bold mt-1">-</div></div>
+      <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm text-slate-500">ช่วงวันที่</div><div id="latestDate" class="text-xl font-bold mt-1">-</div></div>
     </div>
 
     <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
       <div class="xl:col-span-3 space-y-4">
         <div class="bg-white rounded-2xl shadow p-4 space-y-4">
           <div class="font-semibold">ตัวกรอง</div>
-          <div>
-            <label class="text-sm text-slate-600">วันที่</label>
-            <select id="dateFilter" class="mt-1 w-full rounded-xl border-slate-300"></select>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-sm text-slate-600">วันเริ่มต้น</label>
+              <input id="startDateFilter" type="date" class="mt-1 w-full rounded-xl border-slate-300" />
+            </div>
+            <div>
+              <label class="text-sm text-slate-600">วันสิ้นสุด</label>
+              <input id="endDateFilter" type="date" class="mt-1 w-full rounded-xl border-slate-300" />
+            </div>
           </div>
           <div>
             <label class="text-sm text-slate-600">ทีม</label>
@@ -104,14 +110,14 @@
 
           <div id="planView" class="view-panel active">
             <div class="px-4 py-3 border-b bg-slate-50 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-              <div class="text-sm text-slate-600">Route Plan ของวันที่เลือก แยกตามทีม</div>
+              <div class="text-sm text-slate-600">Route Plan ตามช่วงวันที่ที่เลือก แยกตามทีม</div>
               <div id="routePlanTopActions" class="text-sm"></div>
             </div>
             <div id="routePlanContainer" class="p-4 grid grid-cols-1 2xl:grid-cols-2 gap-4"></div>
           </div>
 
           <div id="routeView" class="view-panel">
-            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route map ของวันที่เลือก</div>
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route map ตามช่วงวันที่ที่เลือก</div>
             <div id="routeMap"></div>
           </div>
 
@@ -270,29 +276,39 @@ function fillSelect(selectEl, items, includeAll = true) {
 }
 
 function prepareFilters(data) {
-  const dates = [...new Set(data.map(d => d.date).filter(Boolean))].sort().reverse();
-  const dateFilter = document.getElementById("dateFilter");
-  dateFilter.innerHTML = "";
-  dates.forEach(v => {
-    const opt = document.createElement("option");
-    opt.value = v; opt.textContent = v;
-    dateFilter.appendChild(opt);
-  });
-  if (dates.length) dateFilter.value = dates[0];
+  const dates = [...new Set(data.map(d => d.date).filter(Boolean))].sort();
+
+  const startDateFilter = document.getElementById("startDateFilter");
+  const endDateFilter = document.getElementById("endDateFilter");
+
+  if (dates.length) {
+    startDateFilter.min = dates[0];
+    startDateFilter.max = dates[dates.length - 1];
+    endDateFilter.min = dates[0];
+    endDateFilter.max = dates[dates.length - 1];
+
+    // ค่าเริ่มต้น: แสดงเฉพาะวันแรกที่มีแผน เพื่อไม่ให้หน้าแรกหนักเกินไป
+    startDateFilter.value = dates[0];
+    endDateFilter.value = dates[0];
+  }
+
   fillSelect(document.getElementById("teamFilter"), data.map(d => d.team_name));
   fillSelect(document.getElementById("statusFilter"), data.map(d => d.status));
   fillSelect(document.getElementById("reasonFilter"), data.map(d => d.visit_reason));
 }
 
 function getFilteredData() {
-  const date = document.getElementById("dateFilter").value;
+  const startDate = document.getElementById("startDateFilter").value;
+  const endDate = document.getElementById("endDateFilter").value;
   const team = document.getElementById("teamFilter").value;
   const status = document.getElementById("statusFilter").value;
   const reason = document.getElementById("reasonFilter").value;
   const q = document.getElementById("searchInput").value.trim().toLowerCase();
 
   return rawDailyPlan.filter(d => {
-    const matchDate = !date || d.date === date;
+    const matchDate =
+      (!startDate || d.date >= startDate) &&
+      (!endDate || d.date <= endDate);
     const matchTeam = !team || d.team_name === team;
     const matchStatus = !status || d.status === status;
     const matchReason = !reason || d.visit_reason === reason;
@@ -302,6 +318,11 @@ function getFilteredData() {
 }
 
 function applyFilters() {
+  const startDate = document.getElementById("startDateFilter").value;
+  const endDate = document.getElementById("endDateFilter").value;
+  if (startDate && endDate && startDate > endDate) {
+    document.getElementById("endDateFilter").value = startDate;
+  }
   const data = getFilteredData();
   renderSummary(data);
   renderTeamSummary(data);
@@ -322,7 +343,9 @@ function renderSummary(data) {
   document.getElementById("pendingJobs").textContent = pending;
   document.getElementById("activeTeams").textContent = teams;
   document.getElementById("avgPriority").textContent = avg;
-  document.getElementById("latestDate").textContent = document.getElementById("dateFilter").value || "-";
+  const startDate = document.getElementById("startDateFilter").value;
+  const endDate = document.getElementById("endDateFilter").value;
+  document.getElementById("latestDate").textContent = startDate && endDate ? `${startDate} ถึง ${endDate}` : "-";
 }
 
 function groupByTeam(data) {
@@ -357,6 +380,13 @@ function buildGoogleRouteLink(jobs) {
   return "https://www.google.com/maps/dir/" + limited.map(p => `${p.lat},${p.lng}`).join("/");
 }
 
+function getSelectedDateRangeText() {
+  const startDate = document.getElementById("startDateFilter").value;
+  const endDate = document.getElementById("endDateFilter").value;
+  if (startDate && endDate && startDate !== endDate) return `${startDate} ถึง ${endDate}`;
+  return startDate || endDate || "";
+}
+
 function renderRoutePlan(data) {
   const container = document.getElementById("routePlanContainer");
   const actions = document.getElementById("routePlanTopActions");
@@ -385,7 +415,7 @@ function renderRoutePlan(data) {
           <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
             <div>
               <div class="text-lg font-bold">${escapeHtml(team)}</div>
-              <div class="text-sm text-slate-500">Route Plan ${escapeHtml(document.getElementById("dateFilter").value || "")}</div>
+              <div class="text-sm text-slate-500">Route Plan ${escapeHtml(getSelectedDateRangeText())}</div>
             </div>
             <div class="flex flex-wrap gap-2">
               ${routeLink ? `<a href="${routeLink}" target="_blank" rel="noopener noreferrer" class="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm">เปิด Route ทั้งวัน</a>` : ""}
@@ -620,7 +650,7 @@ async function loadData() {
 }
 
 function bindEvents() {
-  ["dateFilter", "teamFilter", "statusFilter", "reasonFilter"].forEach(id => {
+  ["startDateFilter", "endDateFilter", "teamFilter", "statusFilter", "reasonFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", applyFilters);
   });
   document.getElementById("searchInput").addEventListener("input", applyFilters);
@@ -632,8 +662,11 @@ function bindEvents() {
     document.getElementById("statusFilter").value = "";
     document.getElementById("reasonFilter").value = "";
     document.getElementById("searchInput").value = "";
-    const dateFilter = document.getElementById("dateFilter");
-    if (dateFilter.options.length) dateFilter.value = dateFilter.options[0].value;
+    const dates = [...new Set(rawDailyPlan.map(d => d.date).filter(Boolean))].sort();
+    if (dates.length) {
+      document.getElementById("startDateFilter").value = dates[0];
+      document.getElementById("endDateFilter").value = dates[0];
+    }
     applyFilters();
   });
   document.querySelectorAll(".view-switch").forEach(btn => {
