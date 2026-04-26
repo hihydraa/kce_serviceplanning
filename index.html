@@ -22,7 +22,7 @@
     }
     .gantt-bar {
       position: absolute; top: 12px; height: 56px; border-radius: 14px; padding: 8px 10px; color: white; overflow: hidden;
-      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16); border: 1px solid rgba(255,255,255,0.25);
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16); border: 1px solid rgba(255,255,255,0.25); cursor: pointer;
     }
     .gantt-bar small { display: block; opacity: 0.92; line-height: 1.1; }
     .gantt-bar b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
@@ -133,7 +133,7 @@
           </div>
 
           <div id="ganttView" class="view-panel">
-            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Gantt chart แยกตามวันที่และทีม อ่านง่ายเมื่อเลือกหลายวัน</div>
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Gantt chart แยกตามวันที่และทีม — คลิกที่ block เพื่อดูรายละเอียดงาน</div>
             <div class="overflow-auto mini-scroll"><div id="ganttContainer" class="min-w-[1500px]"></div></div>
           </div>
 
@@ -161,6 +161,27 @@
           </div>
         </div>
 
+        
+        <div id="jobDetailModal" class="hidden fixed inset-0 z-[9999]">
+          <div class="absolute inset-0 bg-slate-900/50" onclick="closeJobDetail()"></div>
+          <div class="relative mx-auto mt-8 md:mt-16 w-[92vw] max-w-2xl rounded-3xl bg-white shadow-2xl overflow-hidden">
+            <div class="px-5 py-4 border-b flex items-start justify-between gap-4">
+              <div>
+                <div class="text-sm text-slate-500">รายละเอียดงาน Service</div>
+                <div id="modalCustomerName" class="text-xl font-bold text-slate-900 mt-1">-</div>
+              </div>
+              <button onclick="closeJobDetail()" class="rounded-full bg-slate-100 hover:bg-slate-200 w-10 h-10 flex items-center justify-center text-xl">&times;</button>
+            </div>
+
+            <div id="modalBody" class="p-5 space-y-4"></div>
+
+            <div class="px-5 py-4 border-t bg-slate-50 flex flex-wrap gap-2 justify-end">
+              <a id="modalMapLink" href="#" target="_blank" rel="noopener noreferrer" class="hidden px-4 py-2 rounded-2xl bg-slate-900 text-white">เปิด Google Maps</a>
+              <button onclick="closeJobDetail()" class="px-4 py-2 rounded-2xl bg-slate-200">ปิด</button>
+            </div>
+          </div>
+        </div>
+
         <div id="errorBox" class="hidden bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 text-sm"></div>
       </div>
     </div>
@@ -173,6 +194,7 @@ const CONFIG = {
 };
 
 let rawDailyPlan = [];
+let jobDetailStore = {};
 let currentView = "plan";
 let map, markersLayer, polylinesLayer;
 
@@ -856,8 +878,91 @@ function renderTable(data) {
   `).join("") : '<tr><td colspan="10" class="px-4 py-8 text-center text-slate-500">ไม่พบข้อมูลตามตัวกรอง</td></tr>';
 }
 
+function jobDetailKey(job) {
+  return String(job.plan_id || `${job.date}_${job.team_id}_${job.customer_id}_${job.sequence}`)
+    .replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function openJobDetail(key) {
+  const job = jobDetailStore[key];
+  if (!job) return;
+
+  document.getElementById("modalCustomerName").textContent = job.customer_name || job.customer_id || "-";
+
+  const mapLink = document.getElementById("modalMapLink");
+  if (job.google_map_link) {
+    mapLink.href = job.google_map_link;
+    mapLink.classList.remove("hidden");
+  } else {
+    mapLink.href = "#";
+    mapLink.classList.add("hidden");
+  }
+
+  document.getElementById("modalBody").innerHTML = `
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">วันที่</div>
+        <div class="font-bold mt-1">${escapeHtml(job.date || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">ทีม</div>
+        <div class="font-bold mt-1">${escapeHtml(job.team_name || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">ลำดับ</div>
+        <div class="font-bold mt-1">#${escapeHtml(job.sequence || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">เวลาเข้า</div>
+        <div class="font-bold mt-1">${escapeHtml(job.estimated_arrival_time || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">เวลาออก</div>
+        <div class="font-bold mt-1">${escapeHtml(job.estimated_departure_time || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-slate-50 p-3">
+        <div class="text-xs text-slate-500">สถานะ</div>
+        <div class="font-bold mt-1">${escapeHtml(job.status || "-")}</div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div class="rounded-2xl bg-emerald-50 p-4">
+        <div class="text-sm text-emerald-700">ยอดขาย/เดือน</div>
+        <div class="text-2xl font-bold text-emerald-800 mt-1">${formatNumber(job.sales_liter_monthly || 0)} L</div>
+      </div>
+      <div class="rounded-2xl bg-blue-50 p-4">
+        <div class="text-sm text-blue-700">Priority</div>
+        <div class="text-2xl font-bold text-blue-800 mt-1">${escapeHtml(job.priority_score || "-")}</div>
+      </div>
+      <div class="rounded-2xl bg-amber-50 p-4">
+        <div class="text-sm text-amber-700">เหตุผลเข้าพบ</div>
+        <div class="text-lg font-bold text-amber-800 mt-1">${escapeHtml(job.visit_reason || "-")}</div>
+      </div>
+    </div>
+
+    <div class="rounded-2xl border p-4">
+      <div class="text-sm text-slate-500 mb-2">ข้อมูลลูกค้า</div>
+      <div class="space-y-1 text-sm">
+        <div><b>Customer ID:</b> ${escapeHtml(job.customer_id || "-")}</div>
+        <div><b>พื้นที่:</b> ${escapeHtml([job.district, job.province].filter(Boolean).join(", ") || "-")}</div>
+        <div><b>Sales Zone:</b> ${escapeHtml(job.sales_zone || "-")}</div>
+        <div><b>Phone:</b> ${escapeHtml(job.phone || "-")}</div>
+        <div><b>พิกัด:</b> ${job.lat && job.lng ? `${job.lat}, ${job.lng}` : "-"}</div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("jobDetailModal").classList.remove("hidden");
+}
+
+function closeJobDetail() {
+  document.getElementById("jobDetailModal").classList.add("hidden");
+}
+
 function renderGantt(data) {
   const container = document.getElementById("ganttContainer");
+  jobDetailStore = {};
 
   const rows = data
     .filter(d => d.team_name && d.team_name !== "ยังไม่จัดทีม")
@@ -922,8 +1027,12 @@ function renderGantt(data) {
           ? `#${escapeHtml(job.sequence || "-")}`
           : `#${escapeHtml(job.sequence || "-")} ${escapeHtml(job.customer_name || job.customer_id)}`;
 
+        const key = jobDetailKey(job);
+        jobDetailStore[key] = job;
+
         html += `
-          <div class="gantt-bar" title="${escapeHtml(job.customer_name || job.customer_id)} | ${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)} | ${formatNumber(job.sales_liter_monthly || 0)} L/month"
+          <div class="gantt-bar" onclick="openJobDetail('${key}')"
+               title="คลิกเพื่อดูรายละเอียด: ${escapeHtml(job.customer_name || job.customer_id)} | ${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)} | ${formatNumber(job.sales_liter_monthly || 0)} L/month"
                style="left:${left}%; width:${Math.max(width, 2.4)}%; background:${color};">
             <small>${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)}</small>
             <b>${label}</b>
@@ -977,6 +1086,9 @@ async function loadData() {
 }
 
 function bindEvents() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeJobDetail();
+  });
   ["startDateFilter", "endDateFilter", "teamFilter", "statusFilter", "reasonFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", applyFilters);
   });
