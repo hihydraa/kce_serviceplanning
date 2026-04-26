@@ -117,7 +117,7 @@
           </div>
 
           <div id="routeView" class="view-panel">
-            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route map ตามช่วงวันที่ที่เลือก</div>
+            <div class="px-4 py-3 border-b bg-slate-50 text-sm text-slate-600">Route map ตามช่วงวันที่ที่เลือก <span id="coordStatus" class="ml-2 text-xs text-slate-500"></span></div>
             <div id="routeMap"></div>
           </div>
 
@@ -177,14 +177,43 @@ async function fetchGviz(sheetName) {
   return gvizToObjects(JSON.parse(jsonText));
 }
 
+function normalizeHeaderName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[()]/g, "")
+    .toLowerCase();
+}
+
+function getCellValue(cell) {
+  return cell ? (cell.f ?? cell.v ?? "") : "";
+}
+
 function gvizToObjects(gviz) {
-  const cols = gviz.table.cols.map(c => c.label || c.id || "");
+  const rawCols = gviz.table.cols.map(c => String(c.label || c.id || "").trim());
   const rows = gviz.table.rows || [];
-  return rows.map(r => {
+
+  const looksLikeColumnIds =
+    rawCols.length === 0 ||
+    rawCols.every((c, idx) => c === "" || c === String.fromCharCode(65 + idx) || /^col\d+$/i.test(c));
+
+  let headers;
+  let dataRows;
+
+  if (looksLikeColumnIds && rows.length > 0) {
+    headers = (rows[0].c || []).map(cell => normalizeHeaderName(getCellValue(cell)));
+    dataRows = rows.slice(1);
+  } else {
+    headers = rawCols.map(h => normalizeHeaderName(h));
+    dataRows = rows;
+  }
+
+  return dataRows.map(r => {
     const obj = {};
-    cols.forEach((col, i) => {
+    headers.forEach((col, i) => {
+      if (!col) return;
       const cell = r.c[i];
-      obj[col] = cell ? (cell.f ?? cell.v ?? "") : "";
+      obj[col] = getCellValue(cell);
     });
     return obj;
   });
@@ -198,29 +227,92 @@ function normalizeTime(value) {
   return s;
 }
 
+function parseLatLngFromMapLink(link) {
+  const s = String(link || "").trim();
+  if (!s) return { lat: null, lng: null };
+
+  // รองรับรูปแบบ https://www.google.com/maps?q=16.123,103.456
+  let m = s.match(/[?&]q=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+  if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+
+  // รองรับรูปแบบ /dir/16.123,103.456/...
+  m = s.match(/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+  if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+
+  return { lat: null, lng: null };
+}
+
+function customerKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function getAny(obj, keys) {
+  for (const key of keys) {
+    const normalized = normalizeHeaderName(key);
+    if (obj && obj[normalized] !== undefined && obj[normalized] !== "") return obj[normalized];
+    if (obj && obj[key] !== undefined && obj[key] !== "") return obj[key];
+  }
+  return "";
+}
+
+function normalizeDateValue(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+
+  const dateMatch = s.match(/^Date\((\d{4}),(\d{1,2}),(\d{1,2})\)$/);
+  if (dateMatch) {
+    const y = Number(dateMatch[1]);
+    const m = Number(dateMatch[2]) + 1;
+    const d = Number(dateMatch[3]);
+    return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdy) {
+    return `${mdy[3]}-${String(mdy[1]).padStart(2, "0")}-${String(mdy[2]).padStart(2, "0")}`;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  return s;
+}
+
 function normalizeDailyPlanRow(r, customerMap) {
-  const customer = customerMap.get(String(r.customer_id || "").trim()) || {};
-  const lat = parseFloat(customer.lat || r.lat || 0) || null;
-  const lng = parseFloat(customer.lng || r.lng || 0) || null;
+  const planCustomerId = getAny(r, ["customer_id"]);
+  const customer = customerMap.get(customerKey(planCustomerId)) || {};
+  const mapLink = getAny(r, ["google_map_link"]);
+
+  // สำคัญ: พิกัดสำหรับแสดงผล Route/Map ต้องอิงจาก sheet customers เท่านั้น
+  // daily_plan.google_map_link ใช้เป็นลิงก์เปิด Google Maps เท่านั้น ไม่ใช้เป็น source ของ lat/lng
+  const lat = parseFloat(getAny(customer, ["lat", "latitude"]) || 0) || null;
+  const lng = parseFloat(getAny(customer, ["lng", "long", "longitude"]) || 0) || null;
+
+  const matchedCustomer = customerKey(planCustomerId) && customerMap.has(customerKey(planCustomerId));
+
   return {
-    plan_id: String(r.plan_id || "").trim(),
-    date: String(r.date || "").trim(),
-    team_id: String(r.team_id || "").trim(),
-    customer_id: String(r.customer_id || "").trim(),
-    sequence: Number(r.sequence || 0),
-    estimated_arrival_time: normalizeTime(r.estimated_arrival_time),
-    estimated_departure_time: normalizeTime(r.estimated_departure_time),
-    visit_reason: String(r.visit_reason || "").trim(),
-    status: String(r.status || "").trim(),
-    google_map_link: String(r.google_map_link || "").trim(),
-    priority_score: Number(r.priority_score || 0),
-    customer_name: String(r.customer_name || customer.customer_name || "").trim(),
-    team_name: String(r.team_name || "").trim(),
-    lat, lng,
-    province: String(customer.province || "").trim(),
-    district: String(customer.district || "").trim(),
-    phone: String(customer.phone || "").trim(),
-    sales_zone: String(customer.sales_zone || "").trim()
+    plan_id: String(getAny(r, ["plan_id"]) || "").trim(),
+    date: normalizeDateValue(getAny(r, ["date"])),
+    team_id: String(getAny(r, ["team_id"]) || "").trim(),
+    customer_id: String(planCustomerId || "").trim(),
+    sequence: Number(getAny(r, ["sequence"]) || 0),
+    estimated_arrival_time: normalizeTime(getAny(r, ["estimated_arrival_time"])),
+    estimated_departure_time: normalizeTime(getAny(r, ["estimated_departure_time"])),
+    visit_reason: String(getAny(r, ["visit_reason"]) || "").trim(),
+    status: String(getAny(r, ["status"]) || "").trim(),
+    google_map_link: String(mapLink || "").trim(),
+    priority_score: Number(getAny(r, ["priority_score"]) || 0),
+    customer_name: String(getAny(r, ["customer_name"]) || getAny(customer, ["customer_name"]) || "").trim(),
+    team_name: String(getAny(r, ["team_name"]) || "").trim(),
+    lat,
+    lng,
+    province: String(getAny(customer, ["province"]) || "").trim(),
+    district: String(getAny(customer, ["district"]) || "").trim(),
+    phone: String(getAny(customer, ["phone"]) || "").trim(),
+    sales_zone: String(getAny(customer, ["sales_zone"]) || "").trim(),
+    coord_source: matchedCustomer && lat && lng ? "customers" : (matchedCustomer ? "customers_missing_lat_lng" : "customer_id_not_matched")
   };
 }
 
@@ -346,6 +438,25 @@ function renderSummary(data) {
   const startDate = document.getElementById("startDateFilter").value;
   const endDate = document.getElementById("endDateFilter").value;
   document.getElementById("latestDate").textContent = startDate && endDate ? `${startDate} ถึง ${endDate}` : "-";
+
+  const missingCoords = data.filter(d => !d.lat || !d.lng);
+  const coordStatus = document.getElementById("coordStatus");
+  if (coordStatus) {
+    const dup = getDuplicateCoordinateSummary(data);
+    const fromCustomers = data.filter(d => d.coord_source === "customers").length;
+    const missingMatch = data.filter(d => d.coord_source === "customer_id_not_matched").length;
+    const missingLatLng = data.filter(d => d.coord_source === "customers_missing_lat_lng").length;
+    coordStatus.textContent = `(ใช้พิกัดจาก customers ${fromCustomers}/${total} จุด${missingMatch ? ` | match customer_id ไม่เจอ ${missingMatch}` : ""}${missingLatLng ? ` | customers ไม่มี lat/lng ${missingLatLng}` : ""}${dup.duplicatePoints ? ` | พิกัดซ้ำ ${dup.duplicatedJobs} งาน` : ""})`;
+  }
+  if (missingCoords.length > 0) {
+    console.warn("รายการที่ไม่มีพิกัดจาก customers:", missingCoords.map(d => ({
+      customer_id: d.customer_id,
+      customer_name: d.customer_name,
+      date: d.date,
+      team_name: d.team_name,
+      coord_source: d.coord_source
+    })));
+  }
 }
 
 function groupByTeam(data) {
@@ -362,6 +473,63 @@ function groupByTeam(data) {
     });
   });
   return grouped;
+}
+
+function coordinateKey(d) {
+  if (!d.lat || !d.lng) return "";
+  return `${Number(d.lat).toFixed(6)},${Number(d.lng).toFixed(6)}`;
+}
+
+function withDisplayCoordinates(data) {
+  const groups = {};
+  data.forEach(d => {
+    const key = coordinateKey(d);
+    if (!key) return;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(d);
+  });
+
+  const offsetMeters = 90;
+  const metersPerDegreeLat = 111320;
+
+  Object.values(groups).forEach(items => {
+    if (items.length === 1) {
+      items[0].displayLat = items[0].lat;
+      items[0].displayLng = items[0].lng;
+      items[0].samePointCount = 1;
+      return;
+    }
+
+    items.forEach((d, idx) => {
+      const angle = (2 * Math.PI * idx) / items.length;
+      const radius = offsetMeters * (1 + Math.floor(idx / 12) * 0.35);
+      const latOffset = (Math.sin(angle) * radius) / metersPerDegreeLat;
+      const lngOffset = (Math.cos(angle) * radius) / (metersPerDegreeLat * Math.cos((d.lat * Math.PI) / 180));
+
+      d.displayLat = d.lat + latOffset;
+      d.displayLng = d.lng + lngOffset;
+      d.samePointCount = items.length;
+    });
+  });
+
+  return data;
+}
+
+function getDuplicateCoordinateSummary(data) {
+  const counts = {};
+  data.forEach(d => {
+    const key = coordinateKey(d);
+    if (!key) return;
+    counts[key] = (counts[key] || 0) + 1;
+  });
+
+  const duplicated = Object.values(counts).filter(v => v > 1);
+  const duplicatedJobs = duplicated.reduce((sum, v) => sum + v, 0);
+
+  return {
+    duplicatePoints: duplicated.length,
+    duplicatedJobs
+  };
 }
 
 function estimateTeamDistanceKm(jobs) {
@@ -399,7 +567,8 @@ function renderRoutePlan(data) {
     return;
   }
 
-  actions.innerHTML = `<span class="text-slate-500">${teams.length} ทีม | ${data.filter(d => d.status === "planned").length} งาน planned</span>`;
+  const dup = getDuplicateCoordinateSummary(data.filter(d => d.status === "planned"));
+  actions.innerHTML = `<span class="text-slate-500">${teams.length} ทีม | ${data.filter(d => d.status === "planned").length} งาน planned${dup.duplicatePoints ? ` | พิกัดซ้ำ ${dup.duplicatedJobs} งาน (${dup.duplicatePoints} จุด)` : ""}</span>`;
 
   container.innerHTML = teams.map(team => {
     const jobs = grouped[team];
@@ -408,6 +577,7 @@ function renderRoutePlan(data) {
     const distance = estimateTeamDistanceKm(jobs);
     const routeLink = buildGoogleRouteLink(jobs);
     const color = teamColor(team);
+    const dup = getDuplicateCoordinateSummary(jobs);
 
     return `
       <div class="rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -428,6 +598,7 @@ function renderRoutePlan(data) {
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">เริ่ม</div><div class="text-xl font-bold">${escapeHtml(first)}</div></div>
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">จบ</div><div class="text-xl font-bold">${escapeHtml(last)}</div></div>
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">ระยะทางประมาณ</div><div class="text-xl font-bold">${distance ? distance.toFixed(1) : "-"} km</div></div>
+            <div class="rounded-xl bg-amber-50 p-3 md:col-span-4 ${dup.duplicatePoints ? "" : "hidden"}"><div class="text-amber-700 font-semibold">พบพิกัดซ้ำ</div><div class="text-amber-700 text-sm">${dup.duplicatedJobs} งานอยู่ใน ${dup.duplicatePoints} จุดเดียวกัน ระบบจะแยกหมุดบนแผนที่เล็กน้อยเพื่อให้มองเห็นครบ</div></div>
           </div>
         </div>
 
@@ -464,7 +635,7 @@ function focusTeamOnMap(teamName) {
   setView("route");
   const data = getFilteredData().filter(d => d.team_name === teamName && d.lat && d.lng);
   if (!data.length || !map) return;
-  const bounds = data.map(d => [d.lat, d.lng]);
+  const bounds = data.map(d => [d.displayLat || d.lat, d.displayLng || d.lng]);
   setTimeout(() => map.fitBounds(bounds, { padding: [40, 40] }), 200);
 }
 
@@ -501,6 +672,7 @@ function selectTeam(teamName) {
 }
 
 function renderRouteMap(data) {
+  data = withDisplayCoordinates([...data]);
   initMap();
   markersLayer.clearLayers();
   polylinesLayer.clearLayers();
@@ -510,7 +682,7 @@ function renderRouteMap(data) {
   data.forEach(d => {
     if (d.lat && d.lng) {
       const color = statusColor(d.status);
-      const marker = L.circleMarker([d.lat, d.lng], {
+      const marker = L.circleMarker([d.displayLat || d.lat, d.displayLng || d.lng], {
         radius: 9, color, weight: 2, fillColor: color, fillOpacity: 0.85
       });
 
@@ -521,13 +693,13 @@ function renderRouteMap(data) {
           <div><b>Seq:</b> ${escapeHtml(d.sequence || "-")}</div>
           <div><b>สถานะ:</b> ${escapeHtml(d.status || "-")}</div>
           <div><b>ETA:</b> ${escapeHtml(d.estimated_arrival_time || "-")}</div>
-          <div><b>ETD:</b> ${escapeHtml(d.estimated_departure_time || "-")}</div>
+          <div><b>ETD:</b> ${escapeHtml(d.estimated_departure_time || "-")}</div>\n          ${d.samePointCount && d.samePointCount > 1 ? `<div class="text-amber-700"><b>หมายเหตุ:</b> พิกัดซ้ำ ${d.samePointCount} งานในจุดเดียว</div>` : ""}
           ${d.google_map_link ? `<div class="pt-1"><a class="text-blue-600 underline" target="_blank" rel="noopener noreferrer" href="${escapeHtml(d.google_map_link)}">เปิดใน Google Maps</a></div>` : ""}
         </div>
       `);
 
       markersLayer.addLayer(marker);
-      bounds.push([d.lat, d.lng]);
+      bounds.push([d.displayLat || d.lat, d.displayLng || d.lng]);
 
       if (d.team_name && d.team_name !== "ยังไม่จัดทีม" && d.sequence) {
         if (!teamGroups[d.team_name]) teamGroups[d.team_name] = [];
@@ -537,7 +709,7 @@ function renderRouteMap(data) {
   });
 
   Object.entries(teamGroups).forEach(([team, rows]) => {
-    const pts = rows.sort((a, b) => a.sequence - b.sequence).filter(d => d.lat && d.lng).map(d => [d.lat, d.lng]);
+    const pts = rows.sort((a, b) => a.sequence - b.sequence).filter(d => d.lat && d.lng).map(d => [d.displayLat || d.lat, d.displayLng || d.lng]);
     if (pts.length >= 2) {
       L.polyline(pts, { color: teamColor(team), weight: 4, opacity: 0.65 }).addTo(polylinesLayer);
     }
@@ -643,7 +815,11 @@ async function loadData() {
     fetchGviz(CONFIG.TABS.dailyPlan),
     fetchGviz(CONFIG.TABS.customers)
   ]);
-  const customerMap = new Map(customerRows.map(r => [String(r.customer_id || "").trim(), r]));
+  const customerMap = new Map(
+    customerRows
+      .filter(r => customerKey(getAny(r, ["customer_id"])))
+      .map(r => [customerKey(getAny(r, ["customer_id"])), r])
+  );
   rawDailyPlan = dailyPlanRows.map(r => normalizeDailyPlanRow(r, customerMap));
   prepareFilters(rawDailyPlan);
   applyFilters();
