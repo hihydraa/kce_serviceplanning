@@ -39,7 +39,7 @@
     <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
       <div>
         <h1 class="text-2xl md:text-3xl font-bold">KCE Service Planning Dashboard</h1>
-        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม พร้อม Map, Gantt และ Table</p>
+        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม พร้อมยอดขาย/เดือน และ Profit Optimization Index</p>
       </div>
       <button id="refreshBtn" class="px-4 py-2 rounded-2xl bg-slate-900 text-white shadow">รีเฟรชข้อมูล</button>
     </div>
@@ -140,7 +140,7 @@
                     <th class="text-left px-4 py-3">Status</th>
                     <th class="text-left px-4 py-3">ETA</th>
                     <th class="text-left px-4 py-3">ETD</th>
-                    <th class="text-left px-4 py-3">Priority</th>
+                    <th class="text-left px-4 py-3">Priority</th><th class="text-left px-4 py-3">ลิตร/เดือน</th>
                     <th class="text-left px-4 py-3">Map</th>
                   </tr>
                 </thead>
@@ -312,6 +312,7 @@ function normalizeDailyPlanRow(r, customerMap) {
     district: String(getAny(customer, ["district"]) || "").trim(),
     phone: String(getAny(customer, ["phone"]) || "").trim(),
     sales_zone: String(getAny(customer, ["sales_zone"]) || "").trim(),
+    sales_liter_monthly: Number(String(getAny(customer, ["sales_liter_monthly"]) || "0").replace(/,/g, "")),
     coord_source: matchedCustomer && lat && lng ? "customers" : (matchedCustomer ? "customers_missing_lat_lng" : "customer_id_not_matched")
   };
 }
@@ -345,6 +346,26 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+function formatNumber(value) {
+  const n = Number(value || 0);
+  if (!isFinite(n)) return "-";
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function calculateTeamRouteMetrics(jobs) {
+  const planned = jobs.filter(j => j.status === "planned");
+  const totalMonthlyLiter = planned.reduce((sum, j) => sum + Number(j.sales_liter_monthly || 0), 0);
+  const distanceKm = estimateTeamDistanceKm(planned);
+  const literPerKm = distanceKm > 0 ? totalMonthlyLiter / distanceKm : totalMonthlyLiter;
+  const avgPriority = planned.length
+    ? planned.reduce((sum, j) => sum + Number(j.priority_score || 0), 0) / planned.length
+    : 0;
+  const profitIndex = Math.round((literPerKm * 0.7) + (avgPriority * 10 * 0.3));
+
+  return { totalMonthlyLiter, distanceKm, literPerKm, avgPriority, profitIndex };
+}
+
 
 function initMap() {
   if (map) return;
@@ -568,7 +589,8 @@ function renderRoutePlan(data) {
   }
 
   const dup = getDuplicateCoordinateSummary(data.filter(d => d.status === "planned"));
-  actions.innerHTML = `<span class="text-slate-500">${teams.length} ทีม | ${data.filter(d => d.status === "planned").length} งาน planned${dup.duplicatePoints ? ` | พิกัดซ้ำ ${dup.duplicatedJobs} งาน (${dup.duplicatePoints} จุด)` : ""}</span>`;
+  const totalLiter = data.filter(d => d.status === "planned").reduce((sum, d) => sum + Number(d.sales_liter_monthly || 0), 0);
+  actions.innerHTML = `<span class="text-slate-500">${teams.length} ทีม | ${data.filter(d => d.status === "planned").length} งาน planned | ยอดขาย/เดือน ${formatNumber(totalLiter)} L${dup.duplicatePoints ? ` | พิกัดซ้ำ ${dup.duplicatedJobs} งาน (${dup.duplicatePoints} จุด)` : ""}</span>`;
 
   container.innerHTML = teams.map(team => {
     const jobs = grouped[team];
@@ -578,6 +600,7 @@ function renderRoutePlan(data) {
     const routeLink = buildGoogleRouteLink(jobs);
     const color = teamColor(team);
     const dup = getDuplicateCoordinateSummary(jobs);
+    const profit = calculateTeamRouteMetrics(jobs);
 
     return `
       <div class="rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -598,6 +621,9 @@ function renderRoutePlan(data) {
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">เริ่ม</div><div class="text-xl font-bold">${escapeHtml(first)}</div></div>
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">จบ</div><div class="text-xl font-bold">${escapeHtml(last)}</div></div>
             <div class="rounded-xl bg-slate-50 p-3"><div class="text-slate-500">ระยะทางประมาณ</div><div class="text-xl font-bold">${distance ? distance.toFixed(1) : "-"} km</div></div>
+            <div class="rounded-xl bg-emerald-50 p-3"><div class="text-emerald-700">ยอดขาย/เดือน</div><div class="text-xl font-bold text-emerald-800">${formatNumber(profit.totalMonthlyLiter)} L</div></div>
+            <div class="rounded-xl bg-blue-50 p-3"><div class="text-blue-700">ลิตรต่อ กม.</div><div class="text-xl font-bold text-blue-800">${profit.distanceKm ? formatNumber(profit.literPerKm) : "-"} L/km</div></div>
+            <div class="rounded-xl bg-violet-50 p-3"><div class="text-violet-700">Profit Index</div><div class="text-xl font-bold text-violet-800">${formatNumber(profit.profitIndex)}</div></div>
             <div class="rounded-xl bg-amber-50 p-3 md:col-span-4 ${dup.duplicatePoints ? "" : "hidden"}"><div class="text-amber-700 font-semibold">พบพิกัดซ้ำ</div><div class="text-amber-700 text-sm">${dup.duplicatedJobs} งานอยู่ใน ${dup.duplicatePoints} จุดเดียวกัน ระบบจะแยกหมุดบนแผนที่เล็กน้อยเพื่อให้มองเห็นครบ</div></div>
           </div>
         </div>
@@ -618,7 +644,7 @@ function renderRoutePlan(data) {
                 </div>
                 <div class="flex flex-wrap gap-2 mt-2 text-xs">
                   <span class="px-2 py-1 rounded-full bg-slate-100">${escapeHtml(job.visit_reason || "-")}</span>
-                  <span class="px-2 py-1 rounded-full bg-slate-100">Priority ${escapeHtml(job.priority_score || "-")}</span>
+                  <span class="px-2 py-1 rounded-full bg-slate-100">Priority ${escapeHtml(job.priority_score || "-")}</span><span class="px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">ยอดขาย/เดือน ${formatNumber(job.sales_liter_monthly || 0)} L</span>
                   <span class="px-2 py-1 rounded-full text-white" style="background:${statusColor(job.status)}">${escapeHtml(job.status || "-")}</span>
                   ${job.google_map_link ? `<a class="px-2 py-1 rounded-full bg-blue-50 text-blue-700 underline" href="${escapeHtml(job.google_map_link)}" target="_blank" rel="noopener noreferrer">Open Map</a>` : ""}
                 </div>
@@ -739,7 +765,7 @@ function renderTable(data) {
       <td class="px-4 py-3 whitespace-nowrap"><span class="inline-flex px-2 py-1 rounded-full text-white text-xs" style="background:${statusColor(d.status)}">${escapeHtml(d.status || "-")}</span></td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.estimated_arrival_time || "-")}</td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.estimated_departure_time || "-")}</td>
-      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.priority_score || "-")}</td>
+      <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.priority_score || "-")}</td><td class="px-4 py-3 whitespace-nowrap">${formatNumber(d.sales_liter_monthly || 0)}</td>
       <td class="px-4 py-3 whitespace-nowrap">${d.google_map_link ? `<a class="text-blue-600 underline" href="${escapeHtml(d.google_map_link)}" target="_blank" rel="noopener noreferrer">Open Map</a>` : "-"}</td>
     </tr>
   `).join("") : '<tr><td colspan="10" class="px-4 py-8 text-center text-slate-500">ไม่พบข้อมูลตามตัวกรอง</td></tr>';
