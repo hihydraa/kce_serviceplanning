@@ -861,11 +861,91 @@ function mergeActualRowsPreserveLocal(fetchedRows) {
   return fetchedRows;
 }
 
+function jsonpRequest(url, params = {}) {
+  return new Promise((resolve, reject) => {
+    const callbackName = "jsonp_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1000000);
+    const query = new URLSearchParams({ ...params, callback: callbackName, _: Date.now() });
+    const script = document.createElement("script");
+
+    window[callbackName] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+
+    function cleanup() {
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("JSONP request failed"));
+    };
+
+    script.src = url + (url.includes("?") ? "&" : "?") + query.toString();
+    document.body.appendChild(script);
+
+    setTimeout(() => {
+      if (window[callbackName]) {
+        cleanup();
+        reject(new Error("JSONP timeout"));
+      }
+    }, 15000);
+  });
+}
+
+async function readActualFromWebApp() {
+  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
+    return [];
+  }
+
+  const startDate = document.getElementById("startDateFilter")?.value || "";
+  const endDate = document.getElementById("endDateFilter")?.value || "";
+
+  const result = await jsonpRequest(CONFIG.ACTUAL_WEB_APP_URL, {
+    api: "list_actual",
+    start_date: startDate,
+    end_date: endDate
+  });
+
+  if (!result || !result.ok) {
+    throw new Error(result && result.error ? result.error : "อ่าน Actual_DailyPlan ไม่สำเร็จ");
+  }
+
+  return (result.rows || []).map(r => normalizeActualPlanRow(r));
+}
+
+async function writeActualViaWebApp(payload, action) {
+  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
+    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
+    return null;
+  }
+
+  const result = await jsonpRequest(CONFIG.ACTUAL_WEB_APP_URL, {
+    api: "write_actual",
+    ...payload
+  });
+
+  if (!result || !result.ok) {
+    throw new Error(result && result.error ? result.error : "เขียน Actual_DailyPlan ไม่สำเร็จ");
+  }
+
+  return result.row ? normalizeActualPlanRow(result.row) : buildOptimisticActualRowFromPayload(payload, action);
+}
+
 async function refreshActualOnly() {
   try {
-    const actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
-    const fetched = actualRows.map(r => normalizeActualPlanRow(r));
-    rawActualPlan = mergeActualRowsPreserveLocal(fetched);
+    let actualRows = [];
+
+    try {
+      actualRows = await readActualFromWebApp();
+    } catch (webErr) {
+      console.warn("อ่าน Actual ผ่าน Web App ไม่สำเร็จ จึง fallback เป็น GViz", webErr);
+      actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
+      actualRows = actualRows.map(r => normalizeActualPlanRow(r));
+    }
+
+    rawActualPlan = mergeActualRowsPreserveLocal(actualRows);
     renderActualPanel();
   } catch (err) {
     console.warn("refreshActualOnly failed", err);
@@ -1042,10 +1122,9 @@ async function submitAdhocVisit(action) {
     user_agent: navigator.userAgent || ""
   };
 
-  const submitted = submitToActualWebApp(payload);
+  const submitted = await submitToActualWebApp(payload, action);
   if (submitted) {
-    appendActualLocally(payload, action);
-    alert("ส่งข้อมูลงานนอกแผนแล้ว");
+    alert("บันทึกงานนอกแผนสำเร็จ");
     closeAdhocModal();
   }
 }
@@ -1433,35 +1512,20 @@ async function getCurrentPositionSafe() {
   });
 }
 
-function submitToActualWebApp(payload) {
-  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
-    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
+async function submitToActualWebApp(payload, action) {
+  try {
+    const savedRow = await writeActualViaWebApp(payload, action);
+    if (savedRow) {
+      rawActualPlan = rawActualPlan.filter(r => !String(r.actual_id || "").startsWith("LOCAL-"));
+      rawActualPlan.push(savedRow);
+      renderActualPanel();
+    }
+    return true;
+  } catch (err) {
+    console.error(err);
+    alert("บันทึกไม่สำเร็จ: " + (err.message || err));
     return false;
   }
-
-  // ใช้ HTML form submit ไปที่ hidden iframe เพื่อเลี่ยงปัญหา CORS/no-cors ของ Apps Script
-  // วิธีนี้เป็นการส่ง POST แบบ application/x-www-form-urlencoded ที่ Apps Script อ่านผ่าน e.parameter ได้แน่นอนกว่า fetch no-cors
-  const container = document.getElementById("hiddenFormContainer");
-  container.innerHTML = "";
-
-  const form = document.createElement("form");
-  form.method = "POST";
-  form.action = CONFIG.ACTUAL_WEB_APP_URL;
-  form.target = "actualSubmitFrame";
-  form.style.display = "none";
-
-  Object.entries(payload).forEach(([key, value]) => {
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = key;
-    input.value = value == null ? "" : String(value);
-    form.appendChild(input);
-  });
-
-  container.appendChild(form);
-  form.submit();
-
-  return true;
 }
 
 async function submitActual(job, action) {
@@ -1500,10 +1564,9 @@ async function submitActual(job, action) {
     user_agent: navigator.userAgent || ""
   };
 
-  const submitted = submitToActualWebApp(payload);
+  const submitted = await submitToActualWebApp(payload, action);
   if (submitted) {
-    appendActualLocally(payload, action);
-    alert("ส่งข้อมูล Actual แล้ว: " + action + "\nหากกดรีเฟรชแล้วยังหาย ให้ตรวจว่า Web App Deploy เป็น Anyone และใช้ URL /exec");
+    alert("บันทึก Actual สำเร็จ: " + action);
   }
 }
 
@@ -1682,10 +1745,9 @@ function appendActualLocally(payload, action) {
 async function loadData() {
   document.getElementById("errorBox").classList.add("hidden");
 
-  const [dailyPlanRows, customerRows, actualRows] = await Promise.all([
+  const [dailyPlanRows, customerRows] = await Promise.all([
     fetchGviz(CONFIG.TABS.dailyPlan),
-    fetchGviz(CONFIG.TABS.customers),
-    fetchGviz(CONFIG.TABS.actualPlan).catch(() => [])
+    fetchGviz(CONFIG.TABS.customers)
   ]);
 
   rawCustomers = customerRows;
@@ -1697,9 +1759,16 @@ async function loadData() {
   );
 
   rawDailyPlan = dailyPlanRows.map(r => normalizeDailyPlanRow(r, customerMap));
-  rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
-
   prepareFilters(rawDailyPlan);
+
+  try {
+    rawActualPlan = await readActualFromWebApp();
+  } catch (webErr) {
+    console.warn("อ่าน Actual ผ่าน Web App ไม่สำเร็จ จึง fallback เป็น GViz", webErr);
+    const actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
+    rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
+  }
+
   applyFilters();
 }
 
@@ -1708,7 +1777,12 @@ function bindEvents() {
     if (e.key === "Escape") closeJobDetail();
   });
   ["startDateFilter", "endDateFilter", "teamFilter", "truckFilter", "statusFilter", "reasonFilter"].forEach(id => {
-    document.getElementById(id).addEventListener("change", applyFilters);
+    document.getElementById(id).addEventListener("change", async () => {
+      applyFilters();
+      if (id === "startDateFilter" || id === "endDateFilter") {
+        await refreshActualOnly();
+      }
+    });
   });
   document.getElementById("searchInput").addEventListener("input", applyFilters);
   document.getElementById("refreshBtn").addEventListener("click", async () => {
