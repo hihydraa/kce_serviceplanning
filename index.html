@@ -54,7 +54,7 @@
     <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
       <div>
         <h1 class="text-2xl md:text-3xl font-bold">KCE Service Planning Dashboard</h1>
-        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม/Truck พร้อม Actual Field App และ Profit Optimization Index</p>
+        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม/รถมิเตอร์ พร้อม Actual Field App และ Profit Optimization Index</p>
       </div>
       <button id="refreshBtn" class="px-4 py-2 rounded-2xl bg-slate-900 text-white shadow">รีเฟรชข้อมูล</button>
     </div>
@@ -87,7 +87,7 @@
             <select id="teamFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
           </div>
           <div>
-            <label class="text-sm text-slate-600">Truck Code</label>
+            <label class="text-sm text-slate-600">รถมิเตอร์</label>
             <select id="truckFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
           </div>
           <div>
@@ -297,7 +297,7 @@ let currentView = "plan";
 let map, markersLayer, polylinesLayer;
 
 function gvizUrl(sheetName) {
-  return `https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
+  return `https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&_=${Date.now()}`;
 }
 
 async function fetchGviz(sheetName) {
@@ -849,7 +849,7 @@ async function refreshActualOnly() {
 
 function getCustomerMasterRows() {
   return rawCustomers
-    .filter(c => getAny(c, ["customer_id"]))
+    .filter(c => getAny(c, ["customer_id"]) || getAny(c, ["customer_name"]))
     .map(c => ({
       customer_id: String(getAny(c, ["customer_id"]) || "").trim(),
       customer_name: String(getAny(c, ["customer_name"]) || "").trim(),
@@ -857,6 +857,7 @@ function getCustomerMasterRows() {
       truck_code: String(getAny(c, ["truck_code"]) || "").trim(),
       sales_liter_monthly: Number(String(getAny(c, ["sales_liter_monthly"]) || "0").replace(/,/g, "")),
     }))
+    .filter(c => c.customer_id && c.customer_name)
     .sort((a, b) => {
       if (a.sales_zone !== b.sales_zone) return a.sales_zone.localeCompare(b.sales_zone);
       if (a.truck_code !== b.truck_code) return a.truck_code.localeCompare(b.truck_code);
@@ -948,6 +949,10 @@ function openAdhocModal() {
 
   const customerRows = getCustomerMasterRows();
 
+  if (!customerRows.length) {
+    alert("ไม่พบข้อมูลลูกค้าจากชีท customer กรุณาตรวจชื่อชีทและคอลัมน์ customer_name, truck_code, sales_zone");
+  }
+
   fillAdhocSelect(
     document.getElementById("adhocSalesZone"),
     customerRows.map(c => c.sales_zone),
@@ -1020,9 +1025,9 @@ async function submitAdhocVisit(action) {
       body: JSON.stringify(payload)
     });
 
+    appendActualLocally(payload, action);
     alert("บันทึกงานนอกแผนสำเร็จ");
     closeAdhocModal();
-    await refreshActualOnly();
   } catch (err) {
     console.error(err);
     alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
@@ -1457,8 +1462,8 @@ async function submitActual(job, action) {
       body: JSON.stringify(payload)
     });
 
+    appendActualLocally(payload, action);
     alert("บันทึก Actual สำเร็จ: " + action);
-    await refreshActualOnly();
   } catch (err) {
     console.error(err);
     alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
@@ -1584,6 +1589,57 @@ function showError(message) {
   box.innerHTML = `<div class="font-semibold mb-1">โหลดข้อมูลไม่สำเร็จ</div>
     <div>${escapeHtml(message)}</div>
     <div class="mt-2 text-xs text-rose-700">ถ้าเป็น Google Sheets ส่วนตัว ให้ Publish หรือเปิดสิทธิ์อ่านให้หน้าเว็บเข้าถึงได้ก่อน</div>`;
+}
+
+async function fetchCustomerRows() {
+  return await fetchGviz(CONFIG.TABS.customers).catch(() => []);
+}
+
+
+function buildOptimisticActualRowFromPayload(payload, action) {
+  const now = new Date();
+  const isoDate = payload.plan_date || document.getElementById("startDateFilter").value || now.toISOString().slice(0, 10);
+  const statusMap = {
+    start: "started",
+    arrived: "arrived",
+    completed: "completed",
+    skipped: "skipped",
+    adhoc_arrived: "adhoc_arrived",
+    adhoc_completed: "adhoc_completed"
+  };
+
+  return {
+    actual_id: "LOCAL-" + Date.now(),
+    submitted_at: now.toISOString(),
+    visit_source: payload.visit_source || (String(action).startsWith("adhoc") ? "adhoc" : "planned"),
+    plan_id: payload.plan_id || "",
+    plan_date: isoDate,
+    team_id: payload.team_id || "",
+    team_name: payload.team_name || "",
+    customer_id: payload.customer_id || "",
+    customer_name: payload.customer_name || "",
+    planned_sequence: Number(payload.planned_sequence || 0),
+    actual_sequence: Number(payload.actual_sequence || 0),
+    action: action || payload.action || "",
+    actual_status: statusMap[action] || payload.actual_status || "updated",
+    actual_start_time: action === "start" ? now.toISOString() : "",
+    actual_arrival_time: action === "arrived" || action === "adhoc_arrived" ? now.toISOString() : "",
+    actual_departure_time: action === "completed" || action === "adhoc_completed" ? now.toISOString() : "",
+    skip_reason: payload.skip_reason || "",
+    adhoc_reason: payload.adhoc_reason || "",
+    note: payload.note || "",
+    gps_lat: payload.gps_lat || "",
+    gps_lng: payload.gps_lng || ""
+  };
+}
+
+function appendActualLocally(payload, action) {
+  rawActualPlan.push(buildOptimisticActualRowFromPayload(payload, action));
+  renderActualPanel();
+
+  // Google Sheet อาจใช้เวลาสักครู่ก่อน gviz อ่านแถวใหม่ได้ จึง refresh ซ้ำแบบหน่วงเวลา
+  setTimeout(refreshActualOnly, 1200);
+  setTimeout(refreshActualOnly, 3500);
 }
 
 async function loadData() {
