@@ -50,7 +50,7 @@
     <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
       <div>
         <h1 class="text-2xl md:text-3xl font-bold">KCE Service Planning Dashboard</h1>
-        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม พร้อมยอดขาย/เดือน และ Profit Optimization Index</p>
+        <p class="text-sm text-slate-600 mt-1">ดู Route Plan รายวัน แยกตามทีม/Truck พร้อม Actual Field App และ Profit Optimization Index</p>
       </div>
       <button id="refreshBtn" class="px-4 py-2 rounded-2xl bg-slate-900 text-white shadow">รีเฟรชข้อมูล</button>
     </div>
@@ -81,6 +81,10 @@
           <div>
             <label class="text-sm text-slate-600">ทีม</label>
             <select id="teamFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
+          </div>
+          <div>
+            <label class="text-sm text-slate-600">Truck Code</label>
+            <select id="truckFilter" class="mt-1 w-full rounded-xl border-slate-300"><option value="">ทั้งหมด</option></select>
           </div>
           <div>
             <label class="text-sm text-slate-600">สถานะ</label>
@@ -146,7 +150,7 @@
                     <th class="text-left px-4 py-3">Date</th>
                     <th class="text-left px-4 py-3">Team</th>
                     <th class="text-left px-4 py-3">Seq</th>
-                    <th class="text-left px-4 py-3">Customer</th>
+                    <th class="text-left px-4 py-3">Customer</th><th class="text-left px-4 py-3">Truck</th>
                     <th class="text-left px-4 py-3">Reason</th>
                     <th class="text-left px-4 py-3">Status</th>
                     <th class="text-left px-4 py-3">ETA</th>
@@ -190,7 +194,10 @@
 <script>
 const CONFIG = {
   SHEET_ID: "1Ya8RfQAMexUZmqtOW9E7OHRJuXrYU09eaBuq0W05Fuo",
-  TABS: { dailyPlan: "daily_plan", customers: "customers" }
+  TABS: { dailyPlan: "daily_plan", customers: "customers" },
+
+  // TODO: วาง URL จาก Apps Script Web App ที่ Deploy แล้ว เช่น https://script.google.com/macros/s/xxxxx/exec
+  ACTUAL_WEB_APP_URL: "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE"
 };
 
 let rawDailyPlan = [];
@@ -345,6 +352,7 @@ function normalizeDailyPlanRow(r, customerMap) {
     district: String(getAny(customer, ["district"]) || "").trim(),
     phone: String(getAny(customer, ["phone"]) || "").trim(),
     sales_zone: String(getAny(customer, ["sales_zone"]) || "").trim(),
+    truck_code: String(getAny(customer, ["truck_code"]) || "").trim(),
     sales_liter_monthly: Number(String(getAny(customer, ["sales_liter_monthly"]) || "0").replace(/,/g, "")),
     coord_source: matchedCustomer && lat && lng ? "customers" : (matchedCustomer ? "customers_missing_lat_lng" : "customer_id_not_matched")
   };
@@ -439,6 +447,7 @@ function prepareFilters(data) {
   }
 
   fillSelect(document.getElementById("teamFilter"), data.map(d => d.team_name));
+  fillSelect(document.getElementById("truckFilter"), data.map(d => d.truck_code));
   fillSelect(document.getElementById("statusFilter"), data.map(d => d.status));
   fillSelect(document.getElementById("reasonFilter"), data.map(d => d.visit_reason));
 }
@@ -447,6 +456,7 @@ function getFilteredData() {
   const startDate = document.getElementById("startDateFilter").value;
   const endDate = document.getElementById("endDateFilter").value;
   const team = document.getElementById("teamFilter").value;
+  const truck = document.getElementById("truckFilter").value;
   const status = document.getElementById("statusFilter").value;
   const reason = document.getElementById("reasonFilter").value;
   const q = document.getElementById("searchInput").value.trim().toLowerCase();
@@ -456,10 +466,11 @@ function getFilteredData() {
       (!startDate || d.date >= startDate) &&
       (!endDate || d.date <= endDate);
     const matchTeam = !team || d.team_name === team;
+    const matchTruck = !truck || d.truck_code === truck;
     const matchStatus = !status || d.status === status;
     const matchReason = !reason || d.visit_reason === reason;
     const matchSearch = !q || d.customer_name.toLowerCase().includes(q) || d.customer_id.toLowerCase().includes(q);
-    return matchDate && matchTeam && matchStatus && matchReason && matchSearch;
+    return matchDate && matchTeam && matchTruck && matchStatus && matchReason && matchSearch;
   });
 }
 
@@ -662,7 +673,10 @@ function renderRoutePlan(data) {
         </div>
 
         <div class="p-4 space-y-3">
-          ${jobs.map(job => `
+          ${jobs.map(job => {
+            const key = jobDetailKey(job);
+            jobDetailStore[key] = job;
+            return `
             <div class="route-step relative pl-10 pb-3">
               <div class="absolute left-0 top-0 w-9 h-9 rounded-full text-white flex items-center justify-center text-sm font-bold" style="background:${color}">
                 ${escapeHtml(job.sequence || "-")}
@@ -677,13 +691,14 @@ function renderRoutePlan(data) {
                 </div>
                 <div class="flex flex-wrap gap-2 mt-2 text-xs">
                   <span class="px-2 py-1 rounded-full bg-slate-100">${escapeHtml(job.visit_reason || "-")}</span>
-                  <span class="px-2 py-1 rounded-full bg-slate-100">Priority ${escapeHtml(job.priority_score || "-")}</span><span class="px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">ยอดขาย/เดือน ${formatNumber(job.sales_liter_monthly || 0)} L</span>
+                  <span class="px-2 py-1 rounded-full bg-slate-100">Priority ${escapeHtml(job.priority_score || "-")}</span><span class="px-2 py-1 rounded-full bg-indigo-50 text-indigo-700">Truck ${escapeHtml(job.truck_code || "-")}</span><span class="px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">ยอดขาย/เดือน ${formatNumber(job.sales_liter_monthly || 0)} L</span>
                   <span class="px-2 py-1 rounded-full text-white" style="background:${statusColor(job.status)}">${escapeHtml(job.status || "-")}</span>
                   ${job.google_map_link ? `<a class="px-2 py-1 rounded-full bg-blue-50 text-blue-700 underline" href="${escapeHtml(job.google_map_link)}" target="_blank" rel="noopener noreferrer">Open Map</a>` : ""}
                 </div>
+                ${actualButtonsHtml(key)}
               </div>
             </div>
-          `).join("")}
+          `}).join("")}
         </div>
       </div>
     `;
@@ -793,6 +808,7 @@ async function renderRouteMap(data) {
           <div><b>วันที่:</b> ${escapeHtml(d.date || "-")}</div>
           <div><b>ทีม:</b> ${escapeHtml(d.team_name || "-")}</div>
           <div><b>Seq:</b> ${escapeHtml(d.sequence || "-")}</div>
+          <div><b>Truck:</b> ${escapeHtml(d.truck_code || "-")}</div>
           <div><b>สถานะ:</b> ${escapeHtml(d.status || "-")}</div>
           <div><b>ETA:</b> ${escapeHtml(d.estimated_arrival_time || "-")}</div>
           <div><b>ETD:</b> ${escapeHtml(d.estimated_departure_time || "-")}</div>
@@ -867,7 +883,7 @@ function renderTable(data) {
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.date)}</td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.team_name || "-")}</td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.sequence || "-")}</td>
-      <td class="px-4 py-3 whitespace-nowrap"><div class="font-medium">${escapeHtml(d.customer_name || "-")}</div><div class="text-xs text-slate-500">${escapeHtml(d.customer_id || "")}</div></td>
+      <td class="px-4 py-3 whitespace-nowrap"><div class="font-medium">${escapeHtml(d.customer_name || "-")}</div><div class="text-xs text-slate-500">${escapeHtml(d.customer_id || "")}</div></td><td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.truck_code || "-")}</td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.visit_reason || "-")}</td>
       <td class="px-4 py-3 whitespace-nowrap"><span class="inline-flex px-2 py-1 rounded-full text-white text-xs" style="background:${statusColor(d.status)}">${escapeHtml(d.status || "-")}</span></td>
       <td class="px-4 py-3 whitespace-nowrap">${escapeHtml(d.estimated_arrival_time || "-")}</td>
@@ -947,9 +963,16 @@ function openJobDetail(key) {
         <div><b>Customer ID:</b> ${escapeHtml(job.customer_id || "-")}</div>
         <div><b>พื้นที่:</b> ${escapeHtml([job.district, job.province].filter(Boolean).join(", ") || "-")}</div>
         <div><b>Sales Zone:</b> ${escapeHtml(job.sales_zone || "-")}</div>
+        <div><b>Truck Code:</b> ${escapeHtml(job.truck_code || "-")}</div>
         <div><b>Phone:</b> ${escapeHtml(job.phone || "-")}</div>
         <div><b>พิกัด:</b> ${job.lat && job.lng ? `${job.lat}, ${job.lng}` : "-"}</div>
       </div>
+    </div>
+
+    <div class="rounded-2xl bg-slate-50 p-4">
+      <div class="font-semibold mb-1">บันทึก Actual หน้างาน</div>
+      <div class="text-sm text-slate-500">ใช้ปุ่มด้านล่างเพื่อบันทึกสถานะจริงลงชีท Actual_DailyPlan</div>
+      ${actualButtonsHtml(jobDetailKey(job))}
     </div>
   `;
 
@@ -959,6 +982,89 @@ function openJobDetail(key) {
 function closeJobDetail() {
   document.getElementById("jobDetailModal").classList.add("hidden");
 }
+
+async function getCurrentPositionSafe() {
+  return new Promise(resolve => {
+    if (!navigator.geolocation) {
+      resolve({ gps_lat: "", gps_lng: "" });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        resolve({
+          gps_lat: pos.coords.latitude,
+          gps_lng: pos.coords.longitude
+        });
+      },
+      () => resolve({ gps_lat: "", gps_lng: "" }),
+      { enableHighAccuracy: true, timeout: 6000, maximumAge: 30000 }
+    );
+  });
+}
+
+async function submitActual(job, action) {
+  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
+    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
+    return;
+  }
+
+  const actualSequence = prompt("ลำดับที่ทำจริง (actual_sequence)", job.sequence || "");
+  if (actualSequence === null) return;
+
+  let skipReason = "";
+  if (action === "skipped") {
+    skipReason = prompt("เหตุผลที่ข้ามงานนี้", "") || "";
+  }
+
+  const note = prompt("หมายเหตุเพิ่มเติม (ถ้าไม่มีให้เว้นว่าง)", "") || "";
+
+  const gps = await getCurrentPositionSafe();
+
+  const payload = {
+    plan_id: job.plan_id || "",
+    plan_date: job.date || "",
+    team_id: job.team_id || "",
+    team_name: job.team_name || "",
+    customer_id: job.customer_id || "",
+    customer_name: job.customer_name || "",
+    planned_sequence: job.sequence || "",
+    actual_sequence: actualSequence || "",
+    action,
+    skip_reason: skipReason,
+    note,
+    gps_lat: gps.gps_lat || "",
+    gps_lng: gps.gps_lng || "",
+    user_agent: navigator.userAgent || ""
+  };
+
+  try {
+    // ใช้ no-cors เพราะ Apps Script Web App มักไม่ส่ง CORS header ให้ GitHub Pages
+    await fetch(CONFIG.ACTUAL_WEB_APP_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    });
+
+    alert("บันทึก Actual สำเร็จ: " + action);
+  } catch (err) {
+    console.error(err);
+    alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
+  }
+}
+
+function actualButtonsHtml(jobKey) {
+  return `
+    <div class="flex flex-wrap gap-2 mt-3">
+      <button onclick="submitActual(jobDetailStore['${jobKey}'], 'start')" class="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm">เริ่มงาน</button>
+      <button onclick="submitActual(jobDetailStore['${jobKey}'], 'arrived')" class="px-3 py-2 rounded-xl bg-blue-600 text-white text-sm">ถึงหน้างาน</button>
+      <button onclick="submitActual(jobDetailStore['${jobKey}'], 'completed')" class="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm">เสร็จงาน</button>
+      <button onclick="submitActual(jobDetailStore['${jobKey}'], 'skipped')" class="px-3 py-2 rounded-xl bg-rose-600 text-white text-sm">ข้ามงาน</button>
+    </div>
+  `;
+}
+
 
 function renderGantt(data) {
   const container = document.getElementById("ganttContainer");
@@ -1032,7 +1138,7 @@ function renderGantt(data) {
 
         html += `
           <div class="gantt-bar" onclick="openJobDetail('${key}')"
-               title="คลิกเพื่อดูรายละเอียด: ${escapeHtml(job.customer_name || job.customer_id)} | ${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)} | ${formatNumber(job.sales_liter_monthly || 0)} L/month"
+               title="คลิกเพื่อดูรายละเอียด: ${escapeHtml(job.customer_name || job.customer_id)} | Truck ${escapeHtml(job.truck_code || "-")} | ${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)} | ${formatNumber(job.sales_liter_monthly || 0)} L/month"
                style="left:${left}%; width:${Math.max(width, 2.4)}%; background:${color};">
             <small>${escapeHtml(job.estimated_arrival_time)}-${escapeHtml(job.estimated_departure_time)}</small>
             <b>${label}</b>
@@ -1089,7 +1195,7 @@ function bindEvents() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeJobDetail();
   });
-  ["startDateFilter", "endDateFilter", "teamFilter", "statusFilter", "reasonFilter"].forEach(id => {
+  ["startDateFilter", "endDateFilter", "teamFilter", "truckFilter", "statusFilter", "reasonFilter"].forEach(id => {
     document.getElementById(id).addEventListener("change", applyFilters);
   });
   document.getElementById("searchInput").addEventListener("input", applyFilters);
@@ -1098,6 +1204,7 @@ function bindEvents() {
   });
   document.getElementById("resetBtn").addEventListener("click", () => {
     document.getElementById("teamFilter").value = "";
+    document.getElementById("truckFilter").value = "";
     document.getElementById("statusFilter").value = "";
     document.getElementById("reasonFilter").value = "";
     document.getElementById("searchInput").value = "";
