@@ -714,8 +714,12 @@ function getSelectedDateRangeText() {
   return startDate || endDate || "";
 }
 
+function isISODateText(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
 function normalizeActualPlanRow(r) {
-  return {
+  let actual = {
     actual_id: String(getAny(r, ["actual_id"]) || "").trim(),
     submitted_at: String(getAny(r, ["submitted_at"]) || "").trim(),
     visit_source: String(getAny(r, ["visit_source"]) || "planned").trim(),
@@ -738,6 +742,41 @@ function normalizeActualPlanRow(r) {
     gps_lat: String(getAny(r, ["gps_lat"]) || "").trim(),
     gps_lng: String(getAny(r, ["gps_lng"]) || "").trim()
   };
+
+  // รองรับข้อมูลเก่าที่เคยเขียนเหลื่อมคอลัมน์:
+  // visit_source=PLAN-xxxx, plan_id=2026-04-27, plan_date=TEAM01, team_id=KCE Service Team, ...
+  const shifted =
+    !isISODateText(actual.plan_date) &&
+    isISODateText(normalizeDateValue(actual.plan_id)) &&
+    (actual.visit_source.startsWith("PLAN-") || actual.visit_source === "ADHOC");
+
+  if (shifted) {
+    actual = {
+      actual_id: String(getAny(r, ["actual_id"]) || "").trim(),
+      submitted_at: String(getAny(r, ["submitted_at"]) || "").trim(),
+      visit_source: actual.visit_source === "ADHOC" ? "adhoc" : "planned",
+      plan_id: String(getAny(r, ["visit_source"]) || "").trim(),
+      plan_date: normalizeDateValue(getAny(r, ["plan_id"])),
+      team_id: String(getAny(r, ["plan_date"]) || "").trim(),
+      team_name: String(getAny(r, ["team_id"]) || "").trim(),
+      customer_id: String(getAny(r, ["team_name"]) || "").trim(),
+      customer_name: String(getAny(r, ["customer_id"]) || "").trim(),
+      planned_sequence: Number(getAny(r, ["customer_name"]) || 0),
+      actual_sequence: Number(getAny(r, ["planned_sequence"]) || 0),
+      action: String(getAny(r, ["actual_sequence"]) || "").trim(),
+      actual_status: String(getAny(r, ["action"]) || "").trim(),
+      actual_start_time: String(getAny(r, ["actual_status"]) || "").trim(),
+      actual_arrival_time: String(getAny(r, ["actual_start_time"]) || "").trim(),
+      actual_departure_time: String(getAny(r, ["actual_arrival_time"]) || "").trim(),
+      skip_reason: String(getAny(r, ["actual_departure_time"]) || "").trim(),
+      adhoc_reason: String(getAny(r, ["skip_reason"]) || "").trim(),
+      note: String(getAny(r, ["adhoc_reason"]) || "").trim(),
+      gps_lat: String(getAny(r, ["note"]) || "").trim(),
+      gps_lng: String(getAny(r, ["gps_lat"]) || "").trim()
+    };
+  }
+
+  return actual;
 }
 
 function getFilteredActualData() {
@@ -785,9 +824,13 @@ function renderActualPanel() {
   if (top) top.textContent = `${rows.length} actual | planned ${planned} | adhoc ${adhoc} | completed ${completed} | skipped ${skipped}`;
 
   if (!rows.length) {
+    const startDate = document.getElementById("startDateFilter").value;
+    const endDate = document.getElementById("endDateFilter").value;
+    const sampleDates = [...new Set(rawActualPlan.map(r => r.plan_date).filter(Boolean))].slice(0, 6).join(", ");
     container.innerHTML = `
       <div class="rounded-2xl border bg-white p-8 text-center text-slate-500">
         ยังไม่มี Actual_DailyPlan ในช่วงวันที่ที่เลือก
+        <div class="text-xs mt-2">โหลด Actual ทั้งหมดได้ ${rawActualPlan.length} แถว${sampleDates ? ` | วันที่ที่พบ: ${escapeHtml(sampleDates)}` : ""}</div>
       </div>
     `;
     return;
@@ -864,8 +907,7 @@ function mergeActualRowsPreserveLocal(fetchedRows) {
 async function refreshActualOnly() {
   try {
     const actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
-    const fetched = actualRows.map(r => normalizeActualPlanRow(r));
-    rawActualPlan = mergeActualRowsPreserveLocal(fetched);
+    rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
     renderActualPanel();
   } catch (err) {
     console.warn("refreshActualOnly failed", err);
@@ -1699,6 +1741,8 @@ async function loadData() {
 
   prepareFilters(rawDailyPlan);
   applyFilters();
+
+  console.log("Loaded daily_plan:", rawDailyPlan.length, "Actual_DailyPlan:", rawActualPlan.length);
 }
 
 function bindEvents() {
