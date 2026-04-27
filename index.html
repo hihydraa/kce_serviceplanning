@@ -50,6 +50,8 @@
   </style>
 </head>
 <body class="bg-slate-100 text-slate-800">
+  <iframe name="actualSubmitFrame" id="actualSubmitFrame" class="hidden"></iframe>
+  <div id="hiddenFormContainer" class="hidden"></div>
   <div class="max-w-[1800px] mx-auto p-4 md:p-6 space-y-4">
     <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
       <div>
@@ -286,7 +288,7 @@ const CONFIG = {
   TABS: { dailyPlan: "daily_plan", customers: "customers", actualPlan: "Actual_DailyPlan" },
 
   // TODO: วาง URL จาก Apps Script Web App ที่ Deploy แล้ว เช่น https://script.google.com/macros/s/xxxxx/exec
-  ACTUAL_WEB_APP_URL: "https://script.google.com/macros/library/d/1bmlHkur_nQ9k3r910kIqbFbI0Nenk9Ur-3cCgPXZXvaAz9SO2HSxh7UL/2"
+  ACTUAL_WEB_APP_URL: "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE"
 };
 
 let rawDailyPlan = [];
@@ -1040,20 +1042,11 @@ async function submitAdhocVisit(action) {
     user_agent: navigator.userAgent || ""
   };
 
-  try {
-    await fetch(CONFIG.ACTUAL_WEB_APP_URL, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload)
-    });
-
+  const submitted = submitToActualWebApp(payload);
+  if (submitted) {
     appendActualLocally(payload, action);
-    alert("บันทึกงานนอกแผนสำเร็จ");
+    alert("ส่งข้อมูลงานนอกแผนแล้ว");
     closeAdhocModal();
-  } catch (err) {
-    console.error(err);
-    alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
   }
 }
 
@@ -1440,6 +1433,37 @@ async function getCurrentPositionSafe() {
   });
 }
 
+function submitToActualWebApp(payload) {
+  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
+    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
+    return false;
+  }
+
+  // ใช้ HTML form submit ไปที่ hidden iframe เพื่อเลี่ยงปัญหา CORS/no-cors ของ Apps Script
+  // วิธีนี้เป็นการส่ง POST แบบ application/x-www-form-urlencoded ที่ Apps Script อ่านผ่าน e.parameter ได้แน่นอนกว่า fetch no-cors
+  const container = document.getElementById("hiddenFormContainer");
+  container.innerHTML = "";
+
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = CONFIG.ACTUAL_WEB_APP_URL;
+  form.target = "actualSubmitFrame";
+  form.style.display = "none";
+
+  Object.entries(payload).forEach(([key, value]) => {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = key;
+    input.value = value == null ? "" : String(value);
+    form.appendChild(input);
+  });
+
+  container.appendChild(form);
+  form.submit();
+
+  return true;
+}
+
 async function submitActual(job, action) {
   if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
     alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
@@ -1476,20 +1500,10 @@ async function submitActual(job, action) {
     user_agent: navigator.userAgent || ""
   };
 
-  try {
-    // ใช้ no-cors เพราะ Apps Script Web App มักไม่ส่ง CORS header ให้ GitHub Pages
-    await fetch(CONFIG.ACTUAL_WEB_APP_URL, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload)
-    });
-
+  const submitted = submitToActualWebApp(payload);
+  if (submitted) {
     appendActualLocally(payload, action);
-    alert("บันทึก Actual สำเร็จ: " + action);
-  } catch (err) {
-    console.error(err);
-    alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
+    alert("ส่งข้อมูล Actual แล้ว: " + action + "\nหากกดรีเฟรชแล้วยังหาย ให้ตรวจว่า Web App Deploy เป็น Anyone และใช้ URL /exec");
   }
 }
 
