@@ -209,9 +209,19 @@
                 </div>
               </div>
 
-              <div>
-                <label class="text-sm text-slate-600">เลือกลูกค้า</label>
-                <select id="adhocCustomer" class="mt-1 w-full rounded-xl border-slate-300"></select>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label class="text-sm text-slate-600">เขตการขาย</label>
+                  <select id="adhocSalesZone" class="mt-1 w-full rounded-xl border-slate-300"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">รถมิเตอร์</label>
+                  <select id="adhocTruckCode" class="mt-1 w-full rounded-xl border-slate-300"></select>
+                </div>
+                <div>
+                  <label class="text-sm text-slate-600">ชื่อลูกค้า</label>
+                  <select id="adhocCustomer" class="mt-1 w-full rounded-xl border-slate-300"></select>
+                </div>
               </div>
 
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -276,7 +286,7 @@ const CONFIG = {
   TABS: { dailyPlan: "daily_plan", customers: "customers", actualPlan: "Actual_DailyPlan" },
 
   // TODO: วาง URL จาก Apps Script Web App ที่ Deploy แล้ว เช่น https://script.google.com/macros/s/xxxxx/exec
-  ACTUAL_WEB_APP_URL: "https://script.google.com/macros/s/AKfycbytAjXxGMckE0I0niE5Y9G7rD64GBweLgetHX9s2-Ed04H3EqWIlugds309l8Uy_lPy/exec"
+  ACTUAL_WEB_APP_URL: "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE"
 };
 
 let rawDailyPlan = [];
@@ -827,11 +837,107 @@ function renderActualPanel() {
   }).join("");
 }
 
+async function refreshActualOnly() {
+  try {
+    const actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
+    rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
+    renderActualPanel();
+  } catch (err) {
+    console.warn("refreshActualOnly failed", err);
+  }
+}
+
+function getCustomerMasterRows() {
+  return rawCustomers
+    .filter(c => getAny(c, ["customer_id"]))
+    .map(c => ({
+      customer_id: String(getAny(c, ["customer_id"]) || "").trim(),
+      customer_name: String(getAny(c, ["customer_name"]) || "").trim(),
+      sales_zone: String(getAny(c, ["sales_zone"]) || "").trim(),
+      truck_code: String(getAny(c, ["truck_code"]) || "").trim(),
+      sales_liter_monthly: Number(String(getAny(c, ["sales_liter_monthly"]) || "0").replace(/,/g, "")),
+    }))
+    .sort((a, b) => {
+      if (a.sales_zone !== b.sales_zone) return a.sales_zone.localeCompare(b.sales_zone);
+      if (a.truck_code !== b.truck_code) return a.truck_code.localeCompare(b.truck_code);
+      return a.customer_name.localeCompare(b.customer_name);
+    });
+}
+
+function fillAdhocSelect(selectEl, values, allLabel) {
+  selectEl.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = allLabel || "ทั้งหมด";
+  selectEl.appendChild(all);
+
+  [...new Set(values.filter(Boolean))].sort().forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    selectEl.appendChild(opt);
+  });
+}
+
+function updateAdhocTruckOptions() {
+  const zone = document.getElementById("adhocSalesZone").value;
+  const rows = getCustomerMasterRows().filter(c => !zone || c.sales_zone === zone);
+
+  fillAdhocSelect(
+    document.getElementById("adhocTruckCode"),
+    rows.map(c => c.truck_code),
+    "รถมิเตอร์ทั้งหมด"
+  );
+
+  updateAdhocCustomerOptions();
+}
+
+function updateAdhocCustomerOptions() {
+  const zone = document.getElementById("adhocSalesZone").value;
+  const truck = document.getElementById("adhocTruckCode").value;
+
+  const rows = getCustomerMasterRows()
+    .filter(c => !zone || c.sales_zone === zone)
+    .filter(c => !truck || c.truck_code === truck);
+
+  const customerSelect = document.getElementById("adhocCustomer");
+  customerSelect.innerHTML = "";
+
+  if (!rows.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "ไม่พบลูกค้า";
+    customerSelect.appendChild(opt);
+    return;
+  }
+
+  rows.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.customer_id;
+    opt.textContent = `${c.customer_name} (${c.customer_id})${c.truck_code ? " | " + c.truck_code : ""}${c.sales_liter_monthly ? " | " + formatNumber(c.sales_liter_monthly) + " L" : ""}`;
+    customerSelect.appendChild(opt);
+  });
+}
+
+function bindAdhocCascadingFilters() {
+  const zoneEl = document.getElementById("adhocSalesZone");
+  const truckEl = document.getElementById("adhocTruckCode");
+
+  if (!zoneEl || zoneEl.dataset.bound === "true") return;
+
+  zoneEl.addEventListener("change", updateAdhocTruckOptions);
+  truckEl.addEventListener("change", updateAdhocCustomerOptions);
+
+  zoneEl.dataset.bound = "true";
+}
+
 function openAdhocModal() {
   if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
     alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
     return;
   }
+
+  bindAdhocCascadingFilters();
 
   const startDate = document.getElementById("startDateFilter").value || new Date().toISOString().slice(0,10);
   document.getElementById("adhocDate").value = startDate;
@@ -840,17 +946,29 @@ function openAdhocModal() {
   const teams = [...new Set(rawDailyPlan.map(d => d.team_name).filter(Boolean))].sort();
   teamSelect.innerHTML = teams.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
 
-  const customerSelect = document.getElementById("adhocCustomer");
-  const customers = rawCustomers
-    .filter(c => getAny(c, ["customer_id"]))
-    .sort((a,b) => String(getAny(a, ["customer_name"]) || "").localeCompare(String(getAny(b, ["customer_name"]) || "")));
+  const customerRows = getCustomerMasterRows();
 
-  customerSelect.innerHTML = customers.map(c => {
-    const id = String(getAny(c, ["customer_id"]) || "").trim();
-    const name = String(getAny(c, ["customer_name"]) || "").trim();
-    const truck = String(getAny(c, ["truck_code"]) || "").trim();
-    return `<option value="${escapeHtml(id)}">${escapeHtml(name)} (${escapeHtml(id)}) ${truck ? " | " + escapeHtml(truck) : ""}</option>`;
-  }).join("");
+  fillAdhocSelect(
+    document.getElementById("adhocSalesZone"),
+    customerRows.map(c => c.sales_zone),
+    "เขตการขายทั้งหมด"
+  );
+
+  // ค่าเริ่มต้นให้ตาม filter หลัก ถ้ามี
+  const selectedTruck = document.getElementById("truckFilter").value;
+  const currentPlanRows = getFilteredData();
+  const selectedZone = currentPlanRows[0]?.sales_zone || "";
+
+  if (selectedZone && [...document.getElementById("adhocSalesZone").options].some(o => o.value === selectedZone)) {
+    document.getElementById("adhocSalesZone").value = selectedZone;
+  }
+
+  updateAdhocTruckOptions();
+
+  if (selectedTruck && [...document.getElementById("adhocTruckCode").options].some(o => o.value === selectedTruck)) {
+    document.getElementById("adhocTruckCode").value = selectedTruck;
+    updateAdhocCustomerOptions();
+  }
 
   const actualRows = getFilteredActualData();
   const maxSeq = actualRows.reduce((m, r) => Math.max(m, Number(r.actual_sequence || 0)), 0);
@@ -904,6 +1022,7 @@ async function submitAdhocVisit(action) {
 
     alert("บันทึกงานนอกแผนสำเร็จ");
     closeAdhocModal();
+    await refreshActualOnly();
   } catch (err) {
     console.error(err);
     alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
@@ -1339,6 +1458,7 @@ async function submitActual(job, action) {
     });
 
     alert("บันทึก Actual สำเร็จ: " + action);
+    await refreshActualOnly();
   } catch (err) {
     console.error(err);
     alert("บันทึกไม่สำเร็จ กรุณาตรวจ Web App URL หรือสิทธิ์การ Deploy");
