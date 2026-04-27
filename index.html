@@ -286,7 +286,7 @@ const CONFIG = {
   TABS: { dailyPlan: "daily_plan", customers: "customers", actualPlan: "Actual_DailyPlan" },
 
   // TODO: วาง URL จาก Apps Script Web App ที่ Deploy แล้ว เช่น https://script.google.com/macros/s/xxxxx/exec
-  ACTUAL_WEB_APP_URL: "https://script.google.com/macros/s/AKfycbytAjXxGMckE0I0niE5Y9G7rD64GBweLgetHX9s2-Ed04H3EqWIlugds309l8Uy_lPy/exec"
+  ACTUAL_WEB_APP_URL: "https://script.google.com/macros/library/d/1bmlHkur_nQ9k3r910kIqbFbI0Nenk9Ur-3cCgPXZXvaAz9SO2HSxh7UL/2"
 };
 
 let rawDailyPlan = [];
@@ -837,10 +837,33 @@ function renderActualPanel() {
   }).join("");
 }
 
+function mergeActualRowsPreserveLocal(fetchedRows) {
+  const fetchedIds = new Set(fetchedRows.map(r => String(r.actual_id || "")));
+  const localRows = rawActualPlan.filter(r => String(r.actual_id || "").startsWith("LOCAL-"));
+
+  // เก็บ local row ไว้ก่อน หาก Google Visualization ยัง cache และยังไม่เห็นแถวใหม่
+  localRows.forEach(r => {
+    const sameRecordExists = fetchedRows.some(f =>
+      f.plan_id === r.plan_id &&
+      f.customer_id === r.customer_id &&
+      f.action === r.action &&
+      String(f.actual_sequence || "") === String(r.actual_sequence || "") &&
+      f.plan_date === r.plan_date
+    );
+
+    if (!sameRecordExists && !fetchedIds.has(r.actual_id)) {
+      fetchedRows.push(r);
+    }
+  });
+
+  return fetchedRows;
+}
+
 async function refreshActualOnly() {
   try {
     const actualRows = await fetchGviz(CONFIG.TABS.actualPlan).catch(() => []);
-    rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
+    const fetched = actualRows.map(r => normalizeActualPlanRow(r));
+    rawActualPlan = mergeActualRowsPreserveLocal(fetched);
     renderActualPanel();
   } catch (err) {
     console.warn("refreshActualOnly failed", err);
@@ -933,11 +956,6 @@ function bindAdhocCascadingFilters() {
 }
 
 function openAdhocModal() {
-  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
-    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
-    return;
-  }
-
   bindAdhocCascadingFilters();
 
   const startDate = document.getElementById("startDateFilter").value || new Date().toISOString().slice(0,10);
@@ -950,7 +968,7 @@ function openAdhocModal() {
   const customerRows = getCustomerMasterRows();
 
   if (!customerRows.length) {
-    alert("ไม่พบข้อมูลลูกค้าจากชีท customer กรุณาตรวจชื่อชีทและคอลัมน์ customer_name, truck_code, sales_zone");
+    alert("ไม่พบข้อมูลลูกค้าจากชีท customers กรุณาตรวจชื่อชีทและคอลัมน์ customer_id, customer_name, truck_code, sales_zone");
   }
 
   fillAdhocSelect(
@@ -988,6 +1006,11 @@ function closeAdhocModal() {
 }
 
 async function submitAdhocVisit(action) {
+  if (!CONFIG.ACTUAL_WEB_APP_URL || CONFIG.ACTUAL_WEB_APP_URL.includes("PASTE_YOUR")) {
+    alert("กรุณาใส่ CONFIG.ACTUAL_WEB_APP_URL ในไฟล์ HTML ก่อนใช้งาน");
+    return;
+  }
+
   const customerId = document.getElementById("adhocCustomer").value;
   const customer = rawCustomers.find(c => customerKey(getAny(c, ["customer_id"])) === customerKey(customerId)) || {};
   const customerName = String(getAny(customer, ["customer_name"]) || "").trim();
@@ -1644,16 +1667,24 @@ function appendActualLocally(payload, action) {
 
 async function loadData() {
   document.getElementById("errorBox").classList.add("hidden");
-  const [dailyPlanRows, customerRows] = await Promise.all([
+
+  const [dailyPlanRows, customerRows, actualRows] = await Promise.all([
     fetchGviz(CONFIG.TABS.dailyPlan),
-    fetchGviz(CONFIG.TABS.customers)
+    fetchGviz(CONFIG.TABS.customers),
+    fetchGviz(CONFIG.TABS.actualPlan).catch(() => [])
   ]);
+
+  rawCustomers = customerRows;
+
   const customerMap = new Map(
-    customerRows
+    rawCustomers
       .filter(r => customerKey(getAny(r, ["customer_id"])))
       .map(r => [customerKey(getAny(r, ["customer_id"])), r])
   );
+
   rawDailyPlan = dailyPlanRows.map(r => normalizeDailyPlanRow(r, customerMap));
+  rawActualPlan = actualRows.map(r => normalizeActualPlanRow(r));
+
   prepareFilters(rawDailyPlan);
   applyFilters();
 }
